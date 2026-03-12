@@ -1,0 +1,18 @@
+name: inpainting
+runs_dir: runs
+
+defaults:
+  - dataset: dtd
+  - loader: default
+  - train: default
+  - mask: block
+  - model: unet
+  - _self_
+
+seed:
+  global: 42
+  split: 123
+  eval: 777
+
+data:
+  image_exts: [jpg, jpeg, png]

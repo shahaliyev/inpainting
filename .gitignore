@@ -1,0 +1,64 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+build/
+dist/
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# ML / Experiments
+# =========================
+runs/
+experiments/
+logs/
+outputs/
+
+# Model checkpoints
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+
+# =========================
+# Config overrides / secrets
+# =========================
+.local.yaml
+.env
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Temporary
+# =========================
+*.tmp
+*.log
+*.swp

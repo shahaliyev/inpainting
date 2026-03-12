@@ -1,0 +1,26 @@
+name: carpet
+root: ${oc.env:DATA_PATH}/carpet
+
+images_dir: images
+
+# Subfolders under images/<split>/ (e.g. train/Cam_L, train/Cam_R, val/Cam_L, val/Cam_R)
+camera_folders: [Cam_L, Cam_R]
+image_exts: [jpg, jpeg, png]
+
+norm:
+  mean: [0.5, 0.5, 0.5]
+  std: [0.5, 0.5, 0.5]
+
+transform:
+  train:
+    resize: 289
+    random_crop: 256
+    hflip: 0.5
+    vflip: 0.5
+    to_tensor: true
+    normalize: ${norm}
+  eval:
+    resize: 256
+    center_crop: 256
+    to_tensor: true
+    normalize: ${norm}

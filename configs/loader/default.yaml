@@ -1,0 +1,20 @@
+batch_size: 16
+
+train:
+  shuffle: true
+  drop_last: true
+
+eval:
+  shuffle: false
+  drop_last: false
+
+cpu:
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+
+cuda:
+  num_workers: 12
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2

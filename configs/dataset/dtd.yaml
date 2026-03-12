@@ -1,0 +1,26 @@
+name: dtd
+root: ${oc.env:DATA_PATH}/dtd
+
+images_dir: images
+labels_dir: labels
+
+split_files:
+  train: train1.txt
+  val: val1.txt
+  test: test1.txt
+
+norm:
+  mean: [0.5, 0.5, 0.5]
+  std:  [0.5, 0.5, 0.5]
+
+transform:
+  train:
+    resize: 192 # pix2pix random jitter
+    random_crop: 128
+    to_tensor: true
+    normalize: ${norm}
+  eval:
+    resize: 128
+    center_crop: 128
+    to_tensor: true
+    normalize: ${norm}
