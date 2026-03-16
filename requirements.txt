@@ -6,3 +6,4 @@ tqdm>=4.66
 matplotlib>=3.8
 scikit-image>=0.22
 omegaconf>=2.3
+lpips>=0.1.4

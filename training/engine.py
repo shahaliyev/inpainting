@@ -1,6 +1,8 @@
 import time
 import torch
 
+from utils.metrics import compute_metrics
+
 
 def masked_l1_loss(pred, target, mask, loss_fn):
     per_pix = loss_fn(pred, target)
@@ -60,11 +62,17 @@ def train_one_epoch(model, dl_train, optimizer, scaler, device, loss_fn, use_amp
 
 
 @torch.no_grad()
-def evaluate(model, dl, device, loss_fn, use_amp, epoch=None, global_step=None, logger=None, mean=None, std=None, save_vis=False):
+def evaluate(model, dl, device, loss_fn, use_amp, epoch=None, global_step=None, logger=None, mean=None, std=None, save_vis=False, lpips_net=None):
     model.eval()
     total_loss = 0.0
     total_weight = 0.0
     vis_saved = False
+    # Image-weighted sums for full-image metrics (mean over images)
+    total_psnr = 0.0
+    total_ssim = 0.0
+    total_lpips = 0.0
+    total_images = 0
+    compute_full_metrics = mean is not None and std is not None
 
     for batch in dl:
         img = batch["image"].to(device, non_blocking=True)
@@ -79,10 +87,25 @@ def evaluate(model, dl, device, loss_fn, use_amp, epoch=None, global_step=None, 
         total_loss += loss_num.item()
         total_weight += mask.sum().item() * img.shape[1]
 
+        if compute_full_metrics:
+            m = compute_metrics(pred, img, mask, mean, std, lpips_net=lpips_net)
+            b = pred.shape[0]
+            total_psnr += m["psnr_full"] * b
+            total_ssim += m["ssim_full"] * b
+            if "lpips_full" in m:
+                total_lpips += m["lpips_full"] * b
+            total_images += b
+
         if logger is not None and save_vis and not vis_saved:
             recon = masked * (1.0 - mask) + pred * mask
             logger.save_val_triplet(epoch=epoch, img=img, mask=mask, recon=recon, mean=mean, std=std)
             vis_saved = True
 
     val_loss = total_loss / (total_weight + 1e-8)
-    return {"val_loss": val_loss}
+    out = {"val_loss": val_loss, "l1_mask": val_loss}
+    if compute_full_metrics and total_images > 0:
+        out["psnr_full"] = total_psnr / total_images
+        out["ssim_full"] = total_ssim / total_images
+        if lpips_net is not None:
+            out["lpips_full"] = total_lpips / total_images
+    return out
