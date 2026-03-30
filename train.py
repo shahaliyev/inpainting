@@ -7,7 +7,7 @@ import torch.nn as nn
 from omegaconf import OmegaConf
 
 from data.build import build_dataloader
-from models.unet import build_unet
+from models.build import build_model
 from training.checkpoint import load_checkpoint, make_checkpoint_dict, save_best_checkpoint, save_last_checkpoint
 from training.engine import evaluate, train_one_epoch
 from training.logger import MetricsLogger
@@ -118,7 +118,7 @@ def main():
     dl_train, dl_val = build_dataloaders(args, dataset_cfg, loader_cfg, mask_cfg)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_unet(model_cfg).to(device)
+    model = build_model(model_cfg).to(device)
     optimizer = build_optimizer(model, train_cfg.optimizer)
     scheduler = build_scheduler(optimizer, train_cfg.scheduler, epochs)
     scaler = torch.amp.GradScaler("cuda", enabled=(use_amp and device.type == "cuda"))

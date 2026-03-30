@@ -1,9 +1,9 @@
-torch>=2.2
-torchvision>=0.17
-pillow>=10
-pyyaml>=6
-tqdm>=4.66
-matplotlib>=3.8
-scikit-image>=0.22
-omegaconf>=2.3
-lpips>=0.1.4
+# Python 3.10
+torch>=2.10,<2.11
+torchvision>=0.25,<0.26
+pillow>=12,<13
+numpy>=2.4,<2.5
+omegaconf>=2.3,<2.4
+scikit-image>=0.26,<0.27
+lpips>=0.1.4,<0.2
+matplotlib>=3.10,<3.11

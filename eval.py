@@ -9,7 +9,7 @@ import lpips
 from omegaconf import OmegaConf
 
 from data.build import build_dataloader
-from models.unet import build_unet
+from models.build import build_model
 from training.checkpoint import load_checkpoint
 from training.engine import evaluate
 from training.logger import MetricsLogger
@@ -173,7 +173,7 @@ def main():
     use_amp = bool(getattr(train_cfg, "mixed_precision", False))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = build_unet(model_cfg).to(device)
+    model = build_model(model_cfg).to(device)
     loss_fn = nn.L1Loss(reduction="none")
     scaler = torch.amp.GradScaler("cuda", enabled=(use_amp and device.type == "cuda"))
     state = load_checkpoint(

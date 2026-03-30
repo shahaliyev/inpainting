@@ -1,0 +1,10 @@
+name: multi_block
+
+ratios: [3, 8, 15]
+min_blocks: 2
+max_blocks: 5
+
+train:
+  deterministic: true
+eval:
+  deterministic: true

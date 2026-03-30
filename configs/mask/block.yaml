@@ -1,8 +1,6 @@
 name: block
 
 ratios: [3, 8, 15]
-shape: square
-count_per_ratio: 5
 
 train:
   deterministic: true

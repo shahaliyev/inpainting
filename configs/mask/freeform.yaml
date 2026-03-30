@@ -1,0 +1,15 @@
+name: freeform
+
+num_strokes: 6
+min_vertices: 4
+max_vertices: 12
+min_brush_width: 8
+max_brush_width: 30
+max_angle: 0.7853981633974483
+min_length: 20
+max_length: 80
+
+train:
+  deterministic: true
+eval:
+  deterministic: true
