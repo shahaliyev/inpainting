@@ -10,7 +10,7 @@ def masked_l1_loss(pred, target, mask, loss_fn):
     return (per_pix * mask).sum() / denom
 
 
-def train_one_epoch(model, dl_train, optimizer, scaler, device, loss_fn, use_amp, grad_accum_steps, log_every, vis_every, epoch, global_step, logger, mean, std):
+def train_one_epoch(model, dl_train, optimizer, scaler, device, loss_fn, use_amp, amp_dtype, grad_accum_steps, log_every, vis_every, epoch, global_step, logger, mean, std):
     model.train()
     running_loss = 0.0
     step_count = 0
@@ -23,7 +23,7 @@ def train_one_epoch(model, dl_train, optimizer, scaler, device, loss_fn, use_amp
         masked = batch["masked_image"].to(device, non_blocking=True)
         x = torch.cat([masked, mask], dim=1)
 
-        with torch.autocast(device_type=device.type, enabled=use_amp):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             pred = model(x)
             loss = masked_l1_loss(pred, img, mask, loss_fn) / grad_accum_steps
 
@@ -62,7 +62,7 @@ def train_one_epoch(model, dl_train, optimizer, scaler, device, loss_fn, use_amp
 
 
 @torch.no_grad()
-def evaluate(model, dl, device, loss_fn, use_amp, epoch=None, global_step=None, logger=None, mean=None, std=None, save_vis=False, lpips_net=None):
+def evaluate(model, dl, device, loss_fn, use_amp, amp_dtype=None, epoch=None, global_step=None, logger=None, mean=None, std=None, save_vis=False, lpips_net=None):
     model.eval()
     total_loss = 0.0
     total_weight = 0.0
@@ -80,7 +80,7 @@ def evaluate(model, dl, device, loss_fn, use_amp, epoch=None, global_step=None, 
         masked = batch["masked_image"].to(device, non_blocking=True)
         x = torch.cat([masked, mask], dim=1)
 
-        with torch.autocast(device_type=device.type, enabled=use_amp):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             pred = model(x)
             loss_num = (loss_fn(pred, img) * mask).sum()
 

@@ -39,11 +39,40 @@ def parse_args():
     return ap.parse_args()
 
 
-def apply_runtime_settings(args):
+def apply_runtime_settings(args, train_cfg):
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
         torch.backends.cudnn.benchmark = True
+        if bool(getattr(train_cfg, "tf32", True)):
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.set_float32_matmul_precision("high")
+
+
+def get_amp_dtype(train_cfg, device):
+    if device.type != "cuda":
+        return None
+    name = str(getattr(train_cfg, "amp_dtype", "bfloat16")).lower()
+    if name in {"bfloat16", "bf16"}:
+        return torch.bfloat16
+    if name in {"float16", "fp16"}:
+        return torch.float16
+    raise ValueError(f"Unsupported train.amp_dtype: {name}. Use bfloat16 or float16.")
+
+
+def maybe_compile_model(model, train_cfg):
+    compile_cfg = getattr(train_cfg, "compile", None)
+    enabled = bool(getattr(compile_cfg, "enabled", False)) if compile_cfg is not None else False
+    if not enabled:
+        return model
+    if not hasattr(torch, "compile"):
+        print("torch.compile is not available in this torch build; skipping compile")
+        return model
+    mode = str(getattr(compile_cfg, "mode", "default"))
+    fullgraph = bool(getattr(compile_cfg, "fullgraph", False))
+    dynamic = bool(getattr(compile_cfg, "dynamic", False))
+    return torch.compile(model, mode=mode, fullgraph=fullgraph, dynamic=dynamic)
 
 def apply_thread_settings(train_cfg):
     threads_cfg = getattr(train_cfg, "threads", None)
@@ -99,9 +128,8 @@ def build_dataloaders(args, dataset_cfg, loader_cfg, mask_cfg):
 
 def main():
     args = parse_args()
-    apply_runtime_settings(args)
-
     dataset_cfg, loader_cfg, mask_cfg, model_cfg, train_cfg = load_configs(args)
+    apply_runtime_settings(args, train_cfg)
     apply_thread_settings(train_cfg)
     apply_overrides(args, dataset_cfg, loader_cfg, train_cfg)
 
@@ -118,10 +146,12 @@ def main():
     dl_train, dl_val = build_dataloaders(args, dataset_cfg, loader_cfg, mask_cfg)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_model(model_cfg).to(device)
-    optimizer = build_optimizer(model, train_cfg.optimizer)
+    amp_dtype = get_amp_dtype(train_cfg, device)
+    model_base = build_model(model_cfg).to(device)
+    optimizer = build_optimizer(model_base, train_cfg.optimizer)
     scheduler = build_scheduler(optimizer, train_cfg.scheduler, epochs)
-    scaler = torch.amp.GradScaler("cuda", enabled=(use_amp and device.type == "cuda"))
+    use_grad_scaler = use_amp and device.type == "cuda" and amp_dtype == torch.float16
+    scaler = torch.amp.GradScaler("cuda", enabled=use_grad_scaler)
     loss_fn = nn.L1Loss(reduction="none")
 
     run_dir = Path(args.runs_dir) / args.exp
@@ -140,16 +170,18 @@ def main():
     ckpt_path = Path(args.resume_ckpt) if args.resume_ckpt is not None else checkpoint_dir / "last.pt"
 
     if args.resume:
-        state = load_checkpoint(path=ckpt_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler if (use_amp and device.type == "cuda") else None, device=device)
+        state = load_checkpoint(path=ckpt_path, model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, device=device)
         start_epoch = int(state["epoch"]) + 1
         step = int(state["step"])
         best_val_loss = float(state["best_val_loss"])
         print(f"resumed from {ckpt_path} | epoch={start_epoch} step={step} best_val_loss={best_val_loss:.6f}")
 
+    model = maybe_compile_model(model_base, train_cfg)
+
     val_loss = None
 
     for epoch in range(start_epoch, epochs + 1):
-        train_out = train_one_epoch(model=model, dl_train=dl_train, optimizer=optimizer, scaler=scaler, device=device, loss_fn=loss_fn, use_amp=use_amp, grad_accum_steps=grad_accum_steps, log_every=log_every, vis_every=vis_every, epoch=epoch, global_step=step, logger=logger, mean=mean, std=std)
+        train_out = train_one_epoch(model=model, dl_train=dl_train, optimizer=optimizer, scaler=scaler, device=device, loss_fn=loss_fn, use_amp=use_amp, amp_dtype=amp_dtype, grad_accum_steps=grad_accum_steps, log_every=log_every, vis_every=vis_every, epoch=epoch, global_step=step, logger=logger, mean=mean, std=std)
         step = int(train_out["global_step"])
         train_loss = float(train_out["train_loss"])
         lr_now = optimizer.param_groups[0]["lr"]
@@ -158,14 +190,14 @@ def main():
 
         if eval_every_epochs > 0 and epoch % eval_every_epochs == 0:
             save_val_vis = val_vis_every_epochs > 0 and epoch % val_vis_every_epochs == 0
-            val_out = evaluate(model=model, dl=dl_val, device=device, loss_fn=loss_fn, use_amp=use_amp, epoch=epoch, global_step=step, logger=logger, mean=mean, std=std, save_vis=save_val_vis)
+            val_out = evaluate(model=model, dl=dl_val, device=device, loss_fn=loss_fn, use_amp=use_amp, amp_dtype=amp_dtype, epoch=epoch, global_step=step, logger=logger, mean=mean, std=std, save_vis=save_val_vis)
             val_loss = float(val_out["val_loss"])
             logger.log(epoch=epoch, step=step, split="val", loss=val_loss, lr=lr_now)
             print(f"epoch={epoch} val_loss={val_loss:.6f}")
 
             if save_best and val_loss < best_val_loss:
                 best_val_loss = val_loss
-                best_ckpt = make_checkpoint_dict(model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler if (use_amp and device.type == "cuda") else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
+                best_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
                 best_path = save_best_checkpoint(checkpoint_dir, best_ckpt)
                 print(f"saved best checkpoint: {best_path}")
 
@@ -173,11 +205,11 @@ def main():
             scheduler.step()
 
         if save_last_every_epochs > 0 and epoch % save_last_every_epochs == 0:
-            last_ckpt = make_checkpoint_dict(model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler if (use_amp and device.type == "cuda") else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
+            last_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
             last_path = save_last_checkpoint(checkpoint_dir, last_ckpt)
             print(f"saved last checkpoint: {last_path}")
 
-    final_ckpt = make_checkpoint_dict(model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler if (use_amp and device.type == "cuda") else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epochs, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
+    final_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epochs, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
     final_path = save_last_checkpoint(checkpoint_dir, final_ckpt)
     print(f"done. saved: {final_path}")
 

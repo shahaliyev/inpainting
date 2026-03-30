@@ -13,6 +13,14 @@ scheduler:
 
 grad_accum_steps: 1
 mixed_precision: true
+amp_dtype: bfloat16
+tf32: true
+
+compile:
+  enabled: true
+  mode: default
+  fullgraph: false
+  dynamic: false
 
 threads:
   omp: 1
