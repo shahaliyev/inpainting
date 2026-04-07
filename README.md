@@ -125,6 +125,14 @@ Example with explicit configs:
 python train.py --dataset_yaml configs/dataset/carpet.yaml --mask_yaml configs/mask/block.yaml --model_yaml configs/model/unet.yaml --exp train_carpet
 ```
 
+CPU sanity check (small run, fast feedback):
+
+```bash
+python train.py --train_yaml configs/train/sanity_cpu.yaml --batch_size 2 --limit 32 --exp sanity_cpu_train
+```
+
+This runs only a tiny subset of data for 2 epochs, disables AMP/compile, and is intended only to verify the pipeline.
+
 ## Running Evaluation
 
 Evaluation must be given a checkpoint path:
@@ -137,6 +145,12 @@ Example with explicit configs:
 
 ```bash
 python eval.py --ckpt runs/train/checkpoints/best.pt --dataset_yaml configs/dataset/carpet.yaml --mask_yaml configs/mask/block.yaml --model_yaml configs/model/unet.yaml --exp eval_carpet
+```
+
+CPU sanity evaluation on the same tiny subset:
+
+```bash
+python eval.py --eval_yaml configs/eval/sanity_cpu.yaml --ckpt runs/sanity_cpu_train/checkpoints/last.pt --batch_size 2 --limit 16 --exp sanity_cpu_eval
 ```
 
 Evaluation uses `configs/eval/default.yaml` by default and writes `eval_results.json` under `runs/<exp>/`.
