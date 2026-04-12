@@ -1,0 +1,10 @@
+defaults:
+  mask_yaml: configs/mask/block.yaml
+
+grid:
+  dataset_yaml:
+    - configs/dataset/carpet.yaml
+  mask_yaml:
+    - configs/mask/block.yaml
+  mask_ratios: [3]
+  add_mixed: false
