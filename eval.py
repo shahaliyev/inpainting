@@ -90,7 +90,8 @@ def _expand_grid_product(grid_cfg, defaults_cfg, args):
         if ratio is not None:
             name_parts.append(f"ratio_{ratio}")
         name = "_".join(name_parts) if name_parts else "default"
-        cond = {"name": name, "dataset_yaml": dataset_yaml, "mask_yaml": mask_yaml}
+        cond = {"name": name, "dataset_yaml": dataset_yaml, "mask_yaml": mask_yaml,
+                "mask_overrides": None}
         if ratio is not None:
             cond["mask_ratios"] = [int(ratio)]
         conditions.append(cond)
@@ -108,6 +109,7 @@ def _expand_grid_product(grid_cfg, defaults_cfg, args):
                 "dataset_yaml": dataset_yaml,
                 "mask_yaml": mask_yaml,
                 "mask_ratios": [int(r) for r in ratios_list],
+                "mask_overrides": None,
             })
 
     if not conditions:
@@ -116,28 +118,43 @@ def _expand_grid_product(grid_cfg, defaults_cfg, args):
 
 
 def get_eval_grid(eval_cfg, args):
-    """Return list of condition dicts: name, dataset_yaml, mask_yaml, mask_ratios (optional)."""
-    explicit = list(getattr(eval_cfg, "conditions", None) or [])
-    if explicit:
-        return [
-            {
-                "name": getattr(c, "name", f"cond_{i}"),
-                "dataset_yaml": getattr(c, "dataset_yaml", args.dataset_yaml),
-                "mask_yaml": getattr(c, "mask_yaml", args.mask_yaml),
-                "mask_ratios": _ensure_list(getattr(c, "mask_ratios", None)) or None,
-            }
-            for i, c in enumerate(explicit)
-        ]
+    """Return list of condition dicts: name, dataset_yaml, mask_yaml, mask_ratios, mask_overrides.
+
+    Supports three formats (combinable — conditions and grid may coexist):
+      conditions: explicit list, each entry may carry mask_overrides for arbitrary
+                  mask-config field overrides (e.g. num_strokes for freeform masks).
+      grid:       cartesian product of datasets × mask types × ratios.
+      legacy:     top-level mask_ratios key (single dataset/mask from CLI args).
+    """
+    conditions = []
+
+    for i, c in enumerate(list(getattr(eval_cfg, "conditions", None) or [])):
+        raw_overrides = getattr(c, "mask_overrides", None)
+        overrides = dict(OmegaConf.to_container(raw_overrides)) if raw_overrides else None
+        conditions.append({
+            "name": getattr(c, "name", f"cond_{i}"),
+            "dataset_yaml": getattr(c, "dataset_yaml", args.dataset_yaml),
+            "mask_yaml": getattr(c, "mask_yaml", args.mask_yaml),
+            "mask_ratios": _ensure_list(getattr(c, "mask_ratios", None)) or None,
+            "mask_overrides": overrides,
+        })
+
     grid_cfg = getattr(eval_cfg, "grid", None)
-    defaults_cfg = getattr(eval_cfg, "defaults", OmegaConf.create({}))
     if grid_cfg is not None:
-        return _expand_grid_product(grid_cfg, defaults_cfg, args)
+        defaults_cfg = getattr(eval_cfg, "defaults", OmegaConf.create({}))
+        conditions.extend(_expand_grid_product(grid_cfg, defaults_cfg, args))
+
+    if conditions:
+        return conditions
+
     # Legacy: mask_ratios only (single dataset/mask from CLI)
     ratios = _ensure_list(getattr(eval_cfg, "mask_ratios", None))
     if not ratios:
-        return [{"name": "default", "dataset_yaml": args.dataset_yaml, "mask_yaml": args.mask_yaml, "mask_ratios": None}]
+        return [{"name": "default", "dataset_yaml": args.dataset_yaml, "mask_yaml": args.mask_yaml,
+                 "mask_ratios": None, "mask_overrides": None}]
     return [
-        {"name": f"ratio_{r}", "dataset_yaml": args.dataset_yaml, "mask_yaml": args.mask_yaml, "mask_ratios": [int(r)]}
+        {"name": f"ratio_{r}", "dataset_yaml": args.dataset_yaml, "mask_yaml": args.mask_yaml,
+         "mask_ratios": [int(r)], "mask_overrides": None}
         for r in ratios
     ]
 
@@ -153,14 +170,16 @@ def load_dataset_and_mask(dataset_yaml, mask_yaml):
     return dataset_cfg, mask_cfg
 
 
-def merge_mask_cfg(base_mask_cfg, mask_ratios):
-    """New config = base + ratios override. Does not mutate base."""
-    if not mask_ratios:
+def merge_mask_cfg(base_mask_cfg, mask_ratios=None, mask_overrides=None):
+    """New config = base + overrides. Does not mutate base."""
+    if not mask_ratios and not mask_overrides:
         return base_mask_cfg
-    return OmegaConf.merge(
-        OmegaConf.create(OmegaConf.to_container(base_mask_cfg, resolve=True)),
-        OmegaConf.create({"ratios": [int(r) for r in mask_ratios]}),
-    )
+    cfg = OmegaConf.create(OmegaConf.to_container(base_mask_cfg, resolve=True))
+    if mask_ratios:
+        cfg = OmegaConf.merge(cfg, OmegaConf.create({"ratios": [int(r) for r in mask_ratios]}))
+    if mask_overrides:
+        cfg = OmegaConf.merge(cfg, OmegaConf.create(dict(mask_overrides)))
+    return cfg
 
 
 def main():
@@ -199,7 +218,7 @@ def main():
         cond_name = cond["name"]
         dataset_cfg, mask_cfg = load_dataset_and_mask(cond["dataset_yaml"], cond["mask_yaml"])
         apply_overrides(args, dataset_cfg, loader_cfg)
-        mask_cfg_cond = merge_mask_cfg(mask_cfg, cond.get("mask_ratios"))
+        mask_cfg_cond = merge_mask_cfg(mask_cfg, cond.get("mask_ratios"), cond.get("mask_overrides"))
 
         dl = build_dataloader(
             dataset_cfg,
@@ -229,7 +248,7 @@ def main():
             lpips_net=lpips_net,
         )
         metrics = {k: float(v) for k, v in out.items()}
-        results.append({"condition": cond_name, "dataset_yaml": cond["dataset_yaml"], "mask_yaml": cond["mask_yaml"], "mask_ratios": cond.get("mask_ratios"), "metrics": metrics})
+        results.append({"condition": cond_name, "dataset_yaml": cond["dataset_yaml"], "mask_yaml": cond["mask_yaml"], "mask_ratios": cond.get("mask_ratios"), "mask_overrides": cond.get("mask_overrides"), "metrics": metrics})
         print(f"  {cond_name}: loss={metrics['val_loss']:.6f} psnr={metrics.get('psnr_full', 0):.4f} ssim={metrics.get('ssim_full', 0):.4f} lpips={metrics.get('lpips_full', 0):.4f}")
 
     summary = {

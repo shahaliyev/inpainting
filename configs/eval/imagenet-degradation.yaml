@@ -1,0 +1,34 @@
+# Degradation-curve evaluation for ImageNet datasets.
+#
+# Block and multi-block severity is controlled by mask area ratio (%).
+# Freeform severity is controlled by num_strokes via mask_overrides.
+#
+# Both sections are combined automatically by get_eval_grid.
+# Dataset is NOT hardcoded — pass it via --dataset_yaml so the same config
+# works for imagenet, imagenet-simple, or imagenet-complex.
+#
+# Usage:
+#   python eval.py \
+#     --eval_yaml  configs/eval/imagenet-degradation.yaml \
+#     --dataset_yaml configs/dataset/imagenet-simple.yaml \
+#     --ckpt runs/train/checkpoints/best.pt \
+#     --exp degradation_simple
+#
+#   python tools/plot_degradation.py \
+#     --results runs/degradation_simple/eval_results.json
+
+# ── Freeform: 6 stroke levels via mask_overrides ──────────────────────────
+conditions:
+  - {name: freeform_n2,  mask_yaml: configs/mask/freeform.yaml, mask_overrides: {num_strokes: 2}}
+  - {name: freeform_n4,  mask_yaml: configs/mask/freeform.yaml, mask_overrides: {num_strokes: 4}}
+  - {name: freeform_n6,  mask_yaml: configs/mask/freeform.yaml, mask_overrides: {num_strokes: 6}}
+  - {name: freeform_n9,  mask_yaml: configs/mask/freeform.yaml, mask_overrides: {num_strokes: 9}}
+  - {name: freeform_n14, mask_yaml: configs/mask/freeform.yaml, mask_overrides: {num_strokes: 14}}
+  - {name: freeform_n20, mask_yaml: configs/mask/freeform.yaml, mask_overrides: {num_strokes: 20}}
+
+# ── Block + Multi-block: 6 area ratios via grid ───────────────────────────
+grid:
+  mask_yaml:
+    - configs/mask/block.yaml
+    - configs/mask/multi_block.yaml
+  mask_ratios: [2, 5, 10, 20, 30, 40]
