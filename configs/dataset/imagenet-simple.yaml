@@ -1,0 +1,25 @@
+name: imagenet-simple
+type: imagenet
+root: ${oc.env:DATA_PATH}/imagenet-simple
+
+# Produced by tools/imagenet.py (bottom-k images per class by visual complexity score).
+train_dirs: [train]
+val_dir: val
+image_exts: [JPEG, jpeg, jpg]
+
+norm:
+  mean: [0.5, 0.5, 0.5]
+  std: [0.5, 0.5, 0.5]
+
+transform:
+  train:
+    resize: 289
+    random_crop: 256
+    hflip: 0.5
+    to_tensor: true
+    normalize: ${norm}
+  eval:
+    resize: 256
+    center_crop: 256
+    to_tensor: true
+    normalize: ${norm}
