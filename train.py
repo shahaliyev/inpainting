@@ -18,7 +18,7 @@ def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset_yaml", default="configs/dataset/carpet.yaml")
     ap.add_argument("--loader_yaml", default="configs/loader/default.yaml")
-    ap.add_argument("--mask_yaml", default="configs/mask/block.yaml")
+    ap.add_argument("--mask_yaml", default="configs/mask/mixed.yaml")
     ap.add_argument("--model_yaml", default="configs/model/unet.yaml")
     ap.add_argument("--train_yaml", default="configs/train/default.yaml")
     ap.add_argument("--runs_dir", default="runs")
@@ -142,6 +142,7 @@ def main():
     val_vis_every_epochs = int(getattr(train_cfg, "val_vis_every_epochs", 1))
     save_last_every_epochs = int(getattr(train_cfg.ckpt, "save_last_every_epochs", 1))
     save_best = bool(getattr(train_cfg.ckpt, "save_best", True))
+    patience = int(getattr(train_cfg.ckpt, "patience", 0))
 
     dl_train, dl_val = build_dataloaders(args, dataset_cfg, loader_cfg, mask_cfg)
 
@@ -167,6 +168,7 @@ def main():
     step = 0
     start_epoch = 1
     best_val_loss = float("inf")
+    patience_counter = 0
     ckpt_path = Path(args.resume_ckpt) if args.resume_ckpt is not None else checkpoint_dir / "last.pt"
 
     if args.resume:
@@ -195,11 +197,18 @@ def main():
             logger.log(epoch=epoch, step=step, split="val", loss=val_loss, lr=lr_now)
             print(f"epoch={epoch} val_loss={val_loss:.6f}")
 
-            if save_best and val_loss < best_val_loss:
+            if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                best_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
-                best_path = save_best_checkpoint(checkpoint_dir, best_ckpt)
-                print(f"saved best checkpoint: {best_path}")
+                patience_counter = 0
+                if save_best:
+                    best_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
+                    best_path = save_best_checkpoint(checkpoint_dir, best_ckpt)
+                    print(f"saved best checkpoint: {best_path}")
+            else:
+                patience_counter += 1
+                if patience > 0 and patience_counter >= patience:
+                    print(f"early stopping: no improvement for {patience} epochs (best val_loss={best_val_loss:.6f})")
+                    break
 
         if scheduler is not None:
             scheduler.step()

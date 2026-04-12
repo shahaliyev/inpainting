@@ -2,6 +2,7 @@ from typing import Any, Callable, Dict, Optional
 
 from mask.block import BlockMaskGenerator
 from mask.freeform import FreeformMaskGenerator
+from mask.mixed import MixedMaskGenerator
 from mask.multi_block import MultiBlockMaskGenerator
 
 
@@ -15,6 +16,7 @@ def build_mask_generator(
     builders: Dict[str, Callable[..., object]] = {
         "block": BlockMaskGenerator,
         "freeform": FreeformMaskGenerator,
+        "mixed": MixedMaskGenerator,
         "multi_block": MultiBlockMaskGenerator,
         "multiblock": MultiBlockMaskGenerator,
     }

@@ -36,3 +36,6 @@ val_vis_every_epochs: 1
 ckpt:
   save_last_every_epochs: 1
   save_best: true
+  # Stop training after this many epochs with no val loss improvement.
+  # 0 disables early stopping.
+  patience: 10
