@@ -1,0 +1,26 @@
+name: imagenet
+type: imagenet
+root: ${oc.env:DATA_PATH}/imagenet
+
+# Folder names under root/ for each split.
+# train.X1–X4 each hold 25 classes (1300 images/class); val.X holds 100 classes (50 images/class).
+train_dirs: [train.X1, train.X2, train.X3, train.X4]
+val_dir: val.X
+image_exts: [JPEG, jpeg, jpg]
+
+norm:
+  mean: [0.5, 0.5, 0.5]
+  std: [0.5, 0.5, 0.5]
+
+transform:
+  train:
+    resize: 289
+    random_crop: 256
+    hflip: 0.5
+    to_tensor: true
+    normalize: ${norm}
+  eval:
+    resize: 256
+    center_crop: 256
+    to_tensor: true
+    normalize: ${norm}

@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms as T
 
-from data.dataset import CarpetDataset, DTDDataset
+from data.dataset import CarpetDataset, DTDDataset, ImageNetDataset
 from data.inpainting import InpaintingDataset
 from mask.build import build_mask_generator
 
@@ -107,6 +107,8 @@ def build_base_dataset(dataset_cfg: Any, split: str):
     dataset_type = getattr(dataset_cfg, "type", getattr(dataset_cfg, "name", "dtd"))
     if dataset_type == "carpet":
         return CarpetDataset(dataset_cfg, split=split, transform=transform)
+    if dataset_type == "imagenet":
+        return ImageNetDataset(dataset_cfg, split=split, transform=transform)
     return DTDDataset(dataset_cfg, split=split, transform=transform)
 
 

@@ -1,7 +1,8 @@
+import random
 from pathlib import Path
+
 from PIL import Image
 from torch.utils.data import Dataset
-import random
 
 class CarpetDataset(Dataset):
     """Dataset for folder-based layout: root/images/{split}/{camera}/...images
@@ -65,6 +66,62 @@ class DTDDataset(Dataset):
             lines = [line.strip() for line in f if line.strip()]
 
         samples = [self.images_dir / line for line in lines]
+
+        limit = getattr(cfg, "limit", None)
+        if limit is not None:
+            limit = int(limit)
+            if limit < len(samples):
+                shuffle = bool(getattr(cfg, "limit_shuffle", True))
+                seed = int(getattr(cfg, "limit_seed", 123))
+                if shuffle:
+                    rng = random.Random(seed)
+                    rng.shuffle(samples)
+                samples = samples[:limit]
+
+        self.samples = samples
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path = self.samples[idx]
+        img = Image.open(path).convert("RGB")
+        if self.transform is not None:
+            img = self.transform(img)
+        return {"image": img, "path": str(path)}
+
+
+class ImageNetDataset(Dataset):
+    """
+    ImageNet subset with layout:
+      train: root/train.X{1,2,3,4}/<class_id>/*.JPEG
+      val:   root/val.X/<class_id>/*.JPEG
+
+    Classification labels are not used (inpainting only).
+    Returns {"image": tensor, "path": str}.
+    """
+
+    def __init__(self, cfg, split="train", transform=None):
+        self.root = Path(cfg.root)
+        exts = list(getattr(cfg, "image_exts", ["JPEG", "jpeg", "jpg"]))
+
+        if split == "train":
+            search_dirs = [self.root / d for d in getattr(cfg, "train_dirs", ["train.X1", "train.X2", "train.X3", "train.X4"])]
+        else:
+            search_dirs = [self.root / str(getattr(cfg, "val_dir", "val.X"))]
+
+        samples = []
+        for top_dir in search_dirs:
+            if not top_dir.exists():
+                continue
+            for class_dir in sorted(top_dir.iterdir()):
+                if not class_dir.is_dir():
+                    continue
+                for ext in exts:
+                    samples.extend(class_dir.glob(f"*.{ext}"))
+
+        samples = sorted(set(samples))
 
         limit = getattr(cfg, "limit", None)
         if limit is not None:
