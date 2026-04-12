@@ -15,12 +15,13 @@ norm:
 
 transform:
   train:
-    resize: 192 # pix2pix random jitter
-    random_crop: 128
+    resize: 289
+    random_crop: 256
+    hflip: 0.5
     to_tensor: true
     normalize: ${norm}
   eval:
-    resize: 128
-    center_crop: 128
+    resize: 256
+    center_crop: 256
     to_tensor: true
     normalize: ${norm}

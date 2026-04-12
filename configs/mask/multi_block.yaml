@@ -1,6 +1,6 @@
 name: multi_block
 
-ratios: [3, 8, 15]
+ratios: [5, 10, 20, 30]
 min_blocks: 2
 max_blocks: 5
 

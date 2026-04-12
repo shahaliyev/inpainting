@@ -31,4 +31,4 @@ grid:
   mask_yaml:
     - configs/mask/block.yaml
     - configs/mask/multi_block.yaml
-  mask_ratios: [2, 5, 10, 20, 30, 40]
+  mask_ratios: [2, 5, 8, 10, 15, 20, 25, 30, 40]

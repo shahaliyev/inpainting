@@ -7,25 +7,25 @@
 #
 # Option 1 - Explicit list (full control):
 #   conditions:
-#     - name: carpet_block_ratio_3
+#     - name: carpet_block_ratio_5
 #       dataset_yaml: configs/dataset/carpet.yaml
 #       mask_yaml: configs/mask/block.yaml
-#       mask_ratios: [3]
+#       mask_ratios: [5]
 #     - name: carpet_block_mixed
 #       dataset_yaml: configs/dataset/carpet.yaml
 #       mask_yaml: configs/mask/block.yaml
-#       mask_ratios: [3, 8, 15]
+#       mask_ratios: [5, 10, 20, 30]
 #
 # Option 2 - Product grid:
 #   grid:
 #     dataset_yaml: [carpet.yaml, dtd.yaml]
 #     mask_yaml: [configs/mask/block.yaml, configs/mask/freeform.yaml]  # mask types separately
-#     mask_ratios: [3, 8, 15]   # ratios separately (one condition per ratio)
-#     add_mixed: true           # plus one "mixed" condition per (dataset, mask type)
-#   -> carpet_block_ratio_3, carpet_block_ratio_8, ..., carpet_block_mixed, dtd_block_mixed, ...
+#     mask_ratios: [5, 10, 20, 30]   # ratios separately (one condition per ratio)
+#     add_mixed: true                # plus one "mixed" condition per (dataset, mask type)
+#   -> carpet_block_ratio_5, carpet_block_ratio_10, ..., carpet_block_mixed, dtd_block_mixed, ...
 #
 # Option 3 - Legacy: mask_ratios only (single dataset/mask from CLI)
-#   mask_ratios: [3, 8, 15]
+#   mask_ratios: [5, 10, 20, 30]
 
 defaults:
   mask_yaml: configs/mask/block.yaml
@@ -38,6 +38,6 @@ grid:
   mask_yaml:
     - configs/mask/block.yaml
     # - configs/mask/freeform.yaml   # when you add another mask type
-  mask_ratios: [3, 8, 15]
+  mask_ratios: [5, 10, 20, 30]
   # Add one condition per (dataset, mask type) with all ratios (random per image)
   add_mixed: true

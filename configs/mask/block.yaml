@@ -1,6 +1,6 @@
 name: block
 
-ratios: [3, 8, 15]
+ratios: [5, 10, 20, 30]
 
 train:
   deterministic: true
