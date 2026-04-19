@@ -5,8 +5,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-import lpips
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, ListConfig
 
 from data.build import build_dataloader
 from models.build import build_model
@@ -31,6 +30,8 @@ def parse_args():
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--save_vis", action="store_true")
+    ap.add_argument("--no_lpips", action="store_true",
+                    help="Skip LPIPS computation (saves time on CPU)")
     return ap.parse_args()
 
 
@@ -63,7 +64,7 @@ def _ensure_list(x, default=None):
     """Normalize to list: str -> [str], list -> list, None -> default or []."""
     if x is None:
         return default if default is not None else []
-    if isinstance(x, (list, tuple)):
+    if isinstance(x, (list, tuple, ListConfig)):
         return list(x)
     return [x]
 
@@ -189,8 +190,8 @@ def main():
     eval_cfg = OmegaConf.load(args.eval_yaml)
     _, loader_cfg, _, model_cfg, train_cfg = load_configs(args)
 
-    use_amp = bool(getattr(train_cfg, "mixed_precision", False))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_amp = bool(getattr(train_cfg, "mixed_precision", False)) and device.type == "cuda"
 
     model = build_model(model_cfg).to(device)
     loss_fn = nn.L1Loss(reduction="none")
@@ -207,7 +208,13 @@ def main():
     run_dir = Path(args.runs_dir) / args.exp
     run_dir.mkdir(parents=True, exist_ok=True)
     logger = MetricsLogger(run_dir) if args.save_vis else None
-    lpips_net = lpips.LPIPS(net="alex").to(device).eval()
+    if args.no_lpips:
+        lpips_net = None
+    else:
+        if device.type == "cpu":
+            print("WARNING: LPIPS is enabled on CPU — this will be slow. Pass --no_lpips to skip it.")
+        import lpips
+        lpips_net = lpips.LPIPS(net="alex").to(device).eval()
 
     grid = get_eval_grid(eval_cfg, args)
     results = []
