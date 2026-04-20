@@ -27,7 +27,7 @@ import matplotlib.ticker as mticker
 
 
 METRICS = [
-    ("psnr_full",  "PSNR (dB)",  True),   # True  = higher is better
+    ("psnr_mask",  "PSNR (dB)",  True),   # True  = higher is better
     ("ssim_full",  "SSIM",       True),
     ("lpips_full", "LPIPS",      False),   # False = lower is better
     ("l1_mask",    "Masked L1",  False),
