@@ -39,6 +39,23 @@ def psnr_full(
     psnr_per = -10.0 * torch.log10(mse + 1e-10)
     return psnr_per.mean().item()
 
+def psnr_mask(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    mean: torch.Tensor,
+    std: torch.Tensor,
+) -> float:
+    """Masked PSNR (dB). Compare pred vs target only inside masked region."""
+    pred_01 = _denorm(pred, mean, std)
+    target_01 = _denorm(target, mean, std)
+
+    se = (pred_01 - target_01).pow(2) * mask
+    err_sum = se.sum(dim=[1, 2, 3])  # sum over C, H, W for each image
+    denom = mask.sum(dim=[1, 2, 3]) * pred.shape[1] + 1e-8
+    mse = err_sum / denom
+    psnr_per = -10.0 * torch.log10(mse + 1e-10)
+    return psnr_per.mean().item()
 
 def ssim_full(
     pred: torch.Tensor,
@@ -83,7 +100,7 @@ def compute_metrics(
     """Compute L1 (mask), PSNR, SSIM, and optionally LPIPS (full image)."""
     out = {
         "l1_mask": l1_mask(pred, target, mask).item(),
-        "psnr_full": psnr_full(pred, target, mask, mean, std),
+        "psnr_mask": psnr_mask(pred, target, mask, mean, std),
         "ssim_full": ssim_full(pred, target, mask, mean, std),
     }
     if lpips_net is not None:

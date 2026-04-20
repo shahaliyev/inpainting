@@ -90,7 +90,7 @@ def evaluate(model, dl, device, loss_fn, use_amp, amp_dtype=None, epoch=None, gl
         if compute_full_metrics:
             m = compute_metrics(pred, img, mask, mean, std, lpips_net=lpips_net)
             b = pred.shape[0]
-            total_psnr += m["psnr_full"] * b
+            total_psnr += m["psnr_mask"] * b
             total_ssim += m["ssim_full"] * b
             if "lpips_full" in m:
                 total_lpips += m["lpips_full"] * b
@@ -104,7 +104,7 @@ def evaluate(model, dl, device, loss_fn, use_amp, amp_dtype=None, epoch=None, gl
     val_loss = total_loss / (total_weight + 1e-8)
     out = {"val_loss": val_loss, "l1_mask": val_loss}
     if compute_full_metrics and total_images > 0:
-        out["psnr_full"] = total_psnr / total_images
+        out["psnr_mask"] = total_psnr / total_images
         out["ssim_full"] = total_ssim / total_images
         if lpips_net is not None:
             out["lpips_full"] = total_lpips / total_images

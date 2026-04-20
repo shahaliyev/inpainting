@@ -256,7 +256,7 @@ def main():
         )
         metrics = {k: float(v) for k, v in out.items()}
         results.append({"condition": cond_name, "dataset_yaml": cond["dataset_yaml"], "mask_yaml": cond["mask_yaml"], "mask_ratios": cond.get("mask_ratios"), "mask_overrides": cond.get("mask_overrides"), "metrics": metrics})
-        print(f"  {cond_name}: loss={metrics['val_loss']:.6f} psnr={metrics.get('psnr_full', 0):.4f} ssim={metrics.get('ssim_full', 0):.4f} lpips={metrics.get('lpips_full', 0):.4f}")
+        print(f"  {cond_name}: loss={metrics['val_loss']:.6f} psnr={metrics.get('psnr_mask', 0):.4f} ssim={metrics.get('ssim_full', 0):.4f} lpips={metrics.get('lpips_full', 0):.4f}")
 
     summary = {
         "checkpoint": str(Path(args.ckpt).resolve()),
