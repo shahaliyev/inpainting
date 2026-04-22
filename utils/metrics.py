@@ -75,6 +75,33 @@ def ssim_full(
         scores.append(ssim(r, t, data_range=1.0, channel_axis=2))
     return float(np.mean(scores))
 
+def ssim_mask(
+   pred: torch.Tensor,
+   target: torch.Tensor,
+   mask: torch.Tensor,
+   mean: torch.Tensor,
+   std: torch.Tensor,
+) -> float:
+   """Mask SSIM (structural similarity). Per-image then mean."""
+   recon = target * (1.0 - mask) + pred * mask
+   recon_01 = _denorm(recon, mean, std)
+   target_01 = _denorm(target, mean, std)
+   scores = []
+   for i in range(recon.shape[0]):
+       r = recon_01[i].permute(1, 2, 0).cpu().numpy()
+       t = target_01[i].permute(1, 2, 0).cpu().numpy()
+       m = mask[i, 0].detach().cpu().numpy().astype(np.float32)  # H, W
+
+       _, ssim_map = ssim(r, t, data_range=1.0, channel_axis=2, full=True)
+      
+       # H,W,C -> H,W depending on skimage version and multichannel handling, full=True may 
+       # return either a spatial map [H, W] or a per-channel-like map [H, W, C]
+       if ssim_map.ndim == 3:  
+           ssim_map = ssim_map.mean(axis=2)
+
+       scores.append((ssim_map * m).sum() / (m.sum() + 1e-8))
+
+   return float(np.mean(scores))
 
 def lpips_full(
     pred: torch.Tensor,
