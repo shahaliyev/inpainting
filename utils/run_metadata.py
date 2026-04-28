@@ -43,7 +43,7 @@ def build_train_run_name(model_yaml: str, dataset_yaml: str, mask_cfg: Any, seed
     dataset = _stem(dataset_yaml)
     mask_name = _sanitize_token(str(getattr(mask_cfg, "name", "mask")))
     ratio_tokens = _collect_ratio_tokens(mask_cfg)
-    timestamp = datetime.now().strftime("%y%m%d-%H%M")
+    timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
     parts = [model, dataset, mask_name]
     parts.extend(ratio_tokens)
     parts.append(f"s{int(seed)}")

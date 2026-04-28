@@ -14,26 +14,22 @@ from training.logger import MetricsLogger
 from training.optim import build_optimizer, build_scheduler
 from utils.run_metadata import build_train_run_name, save_resolved_config, save_run_metadata
 
+CONFIGS_DIR = Path("configs")
+
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset_yaml", default="configs/dataset/carpet.yaml")
-    ap.add_argument("--loader_yaml", default="configs/loader/default.yaml")
-    ap.add_argument("--mask_yaml", default="configs/mask/mixed.yaml")
-    ap.add_argument("--model_yaml", default="configs/model/unet.yaml")
-    ap.add_argument("--train_yaml", default="configs/train/default.yaml")
+    ap.add_argument("--dataset", default=None, help="Dataset config key, e.g. carpet")
+    ap.add_argument("--mask", default=None, help="Mask config key, e.g. mixed")
+    ap.add_argument("--model", default=None, help="Model config key, e.g. unet")
+    ap.add_argument("--loader", default="default", help="Loader config key")
+    ap.add_argument("--train", dest="train_name", default="default", help="Train config key")
     ap.add_argument("--runs_dir", default="runs")
     ap.add_argument("--split", default="train")
     ap.add_argument("--val_split", default="val")
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--batch_size", type=int, default=None)
-    ap.add_argument("--lr", type=float, default=None)
-    ap.add_argument("--log_every", type=int, default=None)
-    ap.add_argument("--eval_every_epochs", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--num_threads", type=int, default=2)
-    ap.add_argument("--interop_threads", type=int, default=2)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--resume_ckpt", default=None)
     return ap.parse_args()
@@ -61,7 +57,7 @@ def get_amp_dtype(train_cfg, device):
     raise ValueError(f"Unsupported train.amp_dtype: {name}. Use bfloat16 or float16.")
 
 
-def maybe_compile_model(model, train_cfg):
+def compile_model(model, train_cfg):
     compile_cfg = getattr(train_cfg, "compile", None)
     enabled = bool(getattr(compile_cfg, "enabled", False)) if compile_cfg is not None else False
     if not enabled:
@@ -95,22 +91,21 @@ def apply_overrides(args, dataset_cfg, loader_cfg, train_cfg):
         dataset_cfg.limit_seed = int(args.seed)
     if args.batch_size is not None:
         loader_cfg.batch_size = int(args.batch_size)
-    if args.epochs is not None:
-        train_cfg.epochs = int(args.epochs)
-    if args.lr is not None:
-        train_cfg.optimizer.lr = float(args.lr)
-    if args.log_every is not None:
-        train_cfg.log_every_steps = int(args.log_every)
-    if args.eval_every_epochs is not None:
-        train_cfg.eval_every_epochs = int(args.eval_every_epochs)
 
 
-def load_configs(args):
-    dataset_cfg = OmegaConf.load(args.dataset_yaml)
-    loader_cfg = OmegaConf.load(args.loader_yaml)
-    mask_cfg = OmegaConf.load(args.mask_yaml)
-    model_cfg = OmegaConf.load(args.model_yaml)
-    train_cfg = OmegaConf.load(args.train_yaml)
+def resolve_config_path(group: str, name: str) -> str:
+    path = CONFIGS_DIR / group / f"{name}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"Unknown {group} config '{name}': {path}")
+    return str(path)
+
+
+def load_configs(config_paths):
+    dataset_cfg = OmegaConf.load(config_paths["dataset_yaml"])
+    loader_cfg = OmegaConf.load(config_paths["loader_yaml"])
+    mask_cfg = OmegaConf.load(config_paths["mask_yaml"])
+    model_cfg = OmegaConf.load(config_paths["model_yaml"])
+    train_cfg = OmegaConf.load(config_paths["train_yaml"])
 
     if getattr(dataset_cfg, "root", None) is None:
         raise ValueError("dataset_cfg.root is missing")
@@ -128,24 +123,52 @@ def build_dataloaders(args, dataset_cfg, loader_cfg, mask_cfg):
 
 def main():
     args = parse_args()
-    dataset_cfg, loader_cfg, mask_cfg, model_cfg, train_cfg = load_configs(args)
+    if args.resume:
+        if args.resume_ckpt is None:
+            raise ValueError("--resume requires --resume_ckpt pointing to an existing checkpoint.")
+        ckpt_path = Path(args.resume_ckpt)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"--resume_ckpt not found: {ckpt_path}")
+        if ckpt_path.parent.name != "checkpoints":
+            raise ValueError(f"--resume_ckpt must be inside a checkpoints directory: {ckpt_path}")
+    else:
+        if not args.dataset or not args.mask or not args.model:
+            raise ValueError("Fresh training requires --dataset, --mask, and --model config keys.")
+        ckpt_path = None
+
+    if args.resume:
+        ckpt_raw = torch.load(Path(args.resume_ckpt), map_location="cpu")
+        config_paths = dict(ckpt_raw.get("config_paths", {}) or {})
+        required = {"dataset_yaml", "loader_yaml", "mask_yaml", "model_yaml", "train_yaml"}
+        if not required.issubset(config_paths.keys()):
+            missing = sorted(required - set(config_paths.keys()))
+            raise ValueError(f"Resume checkpoint is missing config paths: {missing}")
+    else:
+        config_paths = {
+            "dataset_yaml": resolve_config_path("dataset", args.dataset),
+            "loader_yaml": resolve_config_path("loader", args.loader),
+            "mask_yaml": resolve_config_path("mask", args.mask),
+            "model_yaml": resolve_config_path("model", args.model),
+            "train_yaml": resolve_config_path("train", args.train_name),
+        }
+
+    dataset_cfg, loader_cfg, mask_cfg, model_cfg, train_cfg = load_configs(config_paths)
     apply_runtime_settings(args, train_cfg)
     apply_thread_settings(train_cfg)
     apply_overrides(args, dataset_cfg, loader_cfg, train_cfg)
 
-    epochs = int(getattr(train_cfg, "epochs", 100))
-    grad_accum_steps = int(getattr(train_cfg, "grad_accum_steps", 1))
-    use_amp = bool(getattr(train_cfg, "mixed_precision", False))
-    log_every = int(getattr(train_cfg, "log_every_steps", 100))
-    vis_every = int(getattr(train_cfg, "vis_every_steps", 0))
-    eval_every_epochs = int(getattr(train_cfg, "eval_every_epochs", 1))
-    val_vis_every_epochs = int(getattr(train_cfg, "val_vis_every_epochs", 1))
-    save_last_every_epochs = int(getattr(train_cfg.ckpt, "save_last_every_epochs", 1))
-    save_best = bool(getattr(train_cfg.ckpt, "save_best", True))
-    patience = int(getattr(train_cfg.ckpt, "patience", 0))
-    metrics_cfg = getattr(train_cfg, "metrics", OmegaConf.create({}))
-    metric_scope = str(getattr(metrics_cfg, "scope", "mask")).lower()
-    report_both_metrics = bool(getattr(metrics_cfg, "report_both", True))
+    epochs = int(train_cfg.epochs)
+    grad_accum_steps = int(train_cfg.grad_accum_steps)
+    use_amp = bool(train_cfg.mixed_precision)
+    log_every = int(train_cfg.log_every_steps)
+    vis_every = int(train_cfg.vis_every_steps)
+    eval_every_epochs = int(train_cfg.eval_every_epochs)
+    val_vis_every_epochs = int(train_cfg.val_vis_every_epochs)
+    save_last_every_epochs = int(train_cfg.ckpt.save_last_every_epochs)
+    save_best = bool(train_cfg.ckpt.save_best)
+    patience = int(train_cfg.ckpt.patience)
+    metric_scope = str(train_cfg.metrics.scope).lower()
+    report_both_metrics = bool(train_cfg.metrics.report_both)
     if metric_scope not in {"mask", "full"}:
         raise ValueError(f"Unsupported train.metrics.scope: {metric_scope}. Use 'mask' or 'full'.")
 
@@ -161,18 +184,13 @@ def main():
     loss_fn = nn.L1Loss(reduction="none")
 
     if args.resume:
-        if args.resume_ckpt is None:
-            raise ValueError("--resume requires --resume_ckpt pointing to an existing checkpoint.")
-        ckpt_path = Path(args.resume_ckpt)
-        if ckpt_path.parent.name != "checkpoints":
-            raise ValueError(f"--resume_ckpt must be inside a checkpoints directory: {ckpt_path}")
         checkpoint_dir = ckpt_path.parent
         run_dir = checkpoint_dir.parent
         run_name = run_dir.name
     else:
         run_name = build_train_run_name(
-            model_yaml=args.model_yaml,
-            dataset_yaml=args.dataset_yaml,
+            model_yaml=config_paths["model_yaml"],
+            dataset_yaml=config_paths["dataset_yaml"],
             mask_cfg=mask_cfg,
             seed=args.seed,
         )
@@ -188,13 +206,6 @@ def main():
         "model_cfg": OmegaConf.to_container(model_cfg, resolve=True),
         "train_cfg": OmegaConf.to_container(train_cfg, resolve=True),
     }
-    config_paths = {
-        "dataset_yaml": args.dataset_yaml,
-        "loader_yaml": args.loader_yaml,
-        "mask_yaml": args.mask_yaml,
-        "model_yaml": args.model_yaml,
-        "train_yaml": args.train_yaml,
-    }
     if not args.resume:
         save_run_metadata(
             run_dir,
@@ -206,9 +217,16 @@ def main():
         )
         save_resolved_config(run_dir, resolved_cfg)
     print(f"run_dir={run_dir}")
+    print(
+        f"startup: dataset={Path(config_paths['dataset_yaml']).stem} "
+        f"mask={Path(config_paths['mask_yaml']).stem} "
+        f"model={Path(config_paths['model_yaml']).stem} "
+        f"train={Path(config_paths['train_yaml']).stem} "
+        f"metric_scope={metric_scope}"
+    )
 
-    mean_list = list(getattr(dataset_cfg.norm, "mean", [0.5, 0.5, 0.5]))
-    std_list = list(getattr(dataset_cfg.norm, "std", [0.5, 0.5, 0.5]))
+    mean_list = list(dataset_cfg.norm.mean)
+    std_list = list(dataset_cfg.norm.std)
     mean = torch.tensor(mean_list, device=device, dtype=torch.float32).view(1, 3, 1, 1)
     std = torch.tensor(std_list, device=device, dtype=torch.float32).view(1, 3, 1, 1)
 
@@ -223,9 +241,15 @@ def main():
         start_epoch = int(state["epoch"]) + 1
         step = int(state["step"])
         best_val_loss = float(state["best_val_loss"])
+        raw_paths = state["raw"].get("config_paths", {}) or {}
+        for key, cli_val in (("dataset_yaml", args.dataset), ("mask_yaml", args.mask), ("model_yaml", args.model)):
+            if cli_val:
+                ckpt_stem = Path(raw_paths.get(key, "")).stem
+                if ckpt_stem and ckpt_stem != cli_val:
+                    print(f"WARNING: resume checkpoint {key}='{ckpt_stem}' but CLI provided '{cli_val}'. Using checkpoint config.")
         print(f"resumed from {ckpt_path} | epoch={start_epoch} step={step} best_val_loss={best_val_loss:.6f}")
 
-    model = maybe_compile_model(model_base, train_cfg)
+    model = compile_model(model_base, train_cfg)
 
     val_loss = None
 

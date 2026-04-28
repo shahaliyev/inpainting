@@ -27,10 +27,10 @@ import matplotlib.ticker as mticker
 
 
 METRICS = [
-    ("psnr_mask",  "PSNR (dB)",  True),   # True  = higher is better
-    ("ssim_full",  "SSIM",       True),
-    ("lpips_full", "LPIPS",      False),   # False = lower is better
-    ("l1_mask",    "Masked L1",  False),
+    (["psnr", "psnr_mask", "psnr_full"], "PSNR (dB)", True),   # True  = higher is better
+    (["ssim", "ssim_mask", "ssim_full"], "SSIM", True),
+    (["lpips", "lpips_mask", "lpips_full"], "LPIPS", False),   # False = lower is better
+    (["l1", "l1_mask", "l1_full"], "L1", False),
 ]
 
 STYLE = {
@@ -145,10 +145,15 @@ def main():
         return
 
     saved = []
-    for metric_key, metric_label, higher_better in METRICS:
+    for metric_candidates, metric_label, higher_better in METRICS:
         all_items = [(r, m) for items in ratio_data.values() for r, m in items] + freeform_data
-        if not any(metric_key in m for _, m in all_items):
-            print(f"Skipping {metric_key} — not present in results")
+        metric_key = None
+        for candidate in metric_candidates:
+            if any(candidate in m for _, m in all_items):
+                metric_key = candidate
+                break
+        if metric_key is None:
+            print(f"Skipping {metric_candidates[0]} — not present in results")
             continue
 
         fig, (ax_ratio, ax_ff) = plt.subplots(1, 2, figsize=(11, 4))
@@ -158,7 +163,7 @@ def main():
         _plot_freeform(ax_ff, freeform_data, metric_key, metric_label, higher_better)
 
         plt.tight_layout()
-        out_path = out_dir / f"degradation_{metric_key}.png"
+        out_path = out_dir / f"degradation_{metric_candidates[0]}.png"
         fig.savefig(out_path, dpi=args.dpi, bbox_inches="tight")
         plt.close(fig)
         saved.append(out_path)

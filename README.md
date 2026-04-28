@@ -106,16 +106,14 @@ If `DATA_PATH` is missing or the expected folders/files are not present, trainin
 Run from the repository root:
 
 ```bash
-python train.py
+python train.py --dataset carpet --mask mixed --model unet
 ```
 
 Important defaults:
 
-- dataset config: `configs/dataset/carpet.yaml`
-- loader config: `configs/loader/default.yaml`
-- mask config: `configs/mask/block.yaml`
-- model config: `configs/model/unet.yaml`
-- train config: `configs/train/default.yaml`
+- loader config key: `default` → `configs/loader/default.yaml`
+- train config key: `default` → `configs/train/default.yaml`
+- dataset, mask, and model keys are required for fresh training
 
 Outputs are written under an auto-generated run directory:
 `runs/<model>__<dataset>__<mask>__...__s<seed>__<timestamp>/`.
@@ -124,13 +122,13 @@ Each run stores `run_meta.json` and `resolved_config.yaml` for reproducibility.
 Example with explicit configs:
 
 ```bash
-python train.py --dataset_yaml configs/dataset/carpet.yaml --mask_yaml configs/mask/block.yaml --model_yaml configs/model/unet.yaml
+python train.py --dataset carpet --mask block --model unet
 ```
 
 CPU sanity check (small run, fast feedback):
 
 ```bash
-python train.py --train_yaml configs/train/sanity_cpu.yaml --batch_size 2 --limit 32
+python train.py --dataset carpet --mask mixed --model unet --train sanity_cpu --batch_size 2 --limit 32
 ```
 
 This runs only a tiny subset of data for 2 epochs, disables AMP/compile, and is intended only to verify the pipeline.
@@ -157,10 +155,11 @@ By default, evaluation infers model/dataset/mask/train/loader settings from chec
 CPU sanity evaluation on the same tiny subset:
 
 ```bash
-python eval.py --eval_yaml configs/eval/sanity_cpu.yaml --ckpt runs/<train_run>/checkpoints/last.pt --batch_size 2 --limit 16
+python eval.py --eval sanity_cpu --ckpt runs/<train_run>/checkpoints/last.pt --batch_size 2 --limit 16
 ```
 
-`--eval_yaml` is optional. When not provided, eval runs a single default condition inferred from checkpoint metadata.
+`--eval` is optional. When not provided, eval runs a single default condition inferred from checkpoint metadata.
+For advanced use, `--eval_yaml` can still be used with a custom path.
 Metric scope is consistent by default (`mask`) and can be overridden with:
 
 ```bash
@@ -169,9 +168,9 @@ python eval.py --ckpt runs/<train_run>/checkpoints/best.pt --metric_scope full
 
 ## What The Current Code Actually Does
 
-- The default training and evaluation path uses the UNet model in `configs/model/unet.yaml`.
-- The active mask config is `configs/mask/block.yaml`.
-- Evaluation reports masked-region L1 loss and full-image PSNR, SSIM, and LPIPS.
+- Training requires explicit dataset/mask/model keys and resolves them under `configs/<group>/<name>.yaml`.
+- Evaluation is checkpoint-first and infers model/dataset/mask/train/loader configs from the checkpoint.
+- Primary metric scope is consistent (`mask` by default), with optional reporting of both mask/full variants.
 - The current implementation does not match older README claims about fixed multi-placement mask protocols such as "25 masks per image", so those claims have been removed here.
 
 ## Dataset Extraction Helper
