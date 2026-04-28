@@ -14,8 +14,8 @@ side-by-side subplots:
   Right – freeform               (x = number of strokes)
 
 Usage:
-  python tools/plot_degradation.py --results runs/eval/eval_results.json
-  python tools/plot_degradation.py --results runs/eval/eval_results.json --out_dir figures/
+  python tools/plot_degradation.py --results runs/<train_run>/eval/default/val/epoch_<n>/eval_results.json
+  python tools/plot_degradation.py --results runs/<train_run>/eval/default/val/epoch_<n>/eval_results.json --out_dir figures/
 """
 
 import argparse

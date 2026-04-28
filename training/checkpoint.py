@@ -3,6 +3,17 @@ from pathlib import Path
 import torch
 from omegaconf import OmegaConf
 
+CKPT_FORMAT_VERSION = 1
+
+
+def validate_checkpoint_schema(ckpt: dict):
+    ver = int(ckpt.get("ckpt_format_version", 0))
+    if ver != CKPT_FORMAT_VERSION:
+        raise ValueError(
+            f"Unsupported checkpoint format version: {ver}. "
+            f"Expected {CKPT_FORMAT_VERSION}. Re-train with current code."
+        )
+
 
 def make_checkpoint_dict(
     model,
@@ -32,6 +43,7 @@ def make_checkpoint_dict(
         "mask_cfg": OmegaConf.to_container(mask_cfg, resolve=True),
         "train_cfg": OmegaConf.to_container(train_cfg, resolve=True),
         "config_paths": dict(config_paths),
+        "ckpt_format_version": CKPT_FORMAT_VERSION,
         "epoch": int(epoch),
         "step": int(step),
         "seed": int(seed),
@@ -62,6 +74,7 @@ def load_checkpoint(path, model, optimizer=None, scheduler=None, scaler=None, de
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
     ckpt = torch.load(path, map_location=device)
+    validate_checkpoint_schema(ckpt)
 
     model.load_state_dict(ckpt["model"])
 

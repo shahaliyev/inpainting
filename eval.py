@@ -1,19 +1,20 @@
 import argparse
-import itertools
 import json
 from pathlib import Path
 
 import torch
 import torch.nn as nn
-from omegaconf import ListConfig, OmegaConf
+from omegaconf import OmegaConf
 
 from data.build import build_dataloader
+from evaluation.config import load_dataset_and_mask, merge_mask_cfg, resolve_config_path
+from evaluation.grid import get_eval_grid
 from models.build import build_model
+from training.checkpoint import validate_checkpoint_schema
 from training.engine import evaluate
 from training.logger import MetricsLogger
-
-CONFIGS_DIR = Path("configs")
-
+from utils.config_resolver import require_cfg_fields
+from utils.runtime_messages import startup_summary_line
 
 def parse_args():
     ap = argparse.ArgumentParser()
@@ -30,6 +31,8 @@ def parse_args():
                     help="Override metric scope. Defaults to train_cfg.metrics.scope or 'mask'.")
     ap.add_argument("--report_both_metrics", action="store_true",
                     help="Also report both mask/full metric variants in eval_results.json.")
+    ap.add_argument("--strict_config_match", action="store_true",
+                    help="Fail if eval config paths mismatch checkpoint metadata defaults.")
     return ap.parse_args()
 
 
@@ -39,13 +42,6 @@ def _cfg_from_ckpt_raw(ckpt_raw, key):
     return OmegaConf.create(ckpt_raw[key])
 
 
-def resolve_config_path(group: str, name: str) -> str:
-    path = CONFIGS_DIR / group / f"{name}.yaml"
-    if not path.exists():
-        raise FileNotFoundError(f"Unknown {group} config '{name}': {path}")
-    return str(path)
-
-
 def apply_cli_overrides(args, dataset_cfg, loader_cfg):
     if args.limit is not None:
         dataset_cfg.limit = int(args.limit)
@@ -53,116 +49,6 @@ def apply_cli_overrides(args, dataset_cfg, loader_cfg):
         dataset_cfg.limit_seed = int(args.seed)
     if args.batch_size is not None:
         loader_cfg.batch_size = int(args.batch_size)
-
-
-def _ensure_list(x, default=None):
-    if x is None:
-        return default if default is not None else []
-    if isinstance(x, (list, tuple, ListConfig)):
-        return list(x)
-    return [x]
-
-
-def _expand_grid_product(grid_cfg, defaults_cfg, default_dataset_yaml, default_mask_yaml):
-    datasets = _ensure_list(getattr(grid_cfg, "dataset_yaml", None), [default_dataset_yaml])
-    ratios_list = _ensure_list(getattr(grid_cfg, "mask_ratios", None))
-    default_mask = getattr(defaults_cfg, "mask_yaml", default_mask_yaml)
-    mask_yamls = _ensure_list(getattr(grid_cfg, "mask_yaml", None), [default_mask])
-    add_mixed = bool(getattr(grid_cfg, "add_mixed", False))
-    conditions = []
-
-    ratios_for_product = ratios_list if ratios_list else [None]
-    for dataset_yaml, ratio, mask_yaml in itertools.product(datasets, ratios_for_product, mask_yamls):
-        name_parts = [Path(dataset_yaml).stem]
-        if len(mask_yamls) > 1:
-            name_parts.append(Path(mask_yaml).stem)
-        if ratio is not None:
-            name_parts.append(f"ratio_{ratio}")
-        cond = {
-            "name": "_".join(name_parts) if name_parts else "default",
-            "dataset_yaml": dataset_yaml,
-            "mask_yaml": mask_yaml,
-            "mask_overrides": None,
-        }
-        if ratio is not None:
-            cond["mask_ratios"] = [int(ratio)]
-        conditions.append(cond)
-
-    if add_mixed and ratios_list:
-        for dataset_yaml, mask_yaml in itertools.product(datasets, mask_yamls):
-            name_parts = [Path(dataset_yaml).stem]
-            if len(mask_yamls) > 1:
-                name_parts.append(Path(mask_yaml).stem)
-            name_parts.append("mixed")
-            conditions.append({
-                "name": "_".join(name_parts),
-                "dataset_yaml": dataset_yaml,
-                "mask_yaml": mask_yaml,
-                "mask_ratios": [int(r) for r in ratios_list],
-                "mask_overrides": None,
-            })
-    return conditions
-
-
-def get_eval_grid(eval_cfg, default_dataset_yaml, default_mask_yaml):
-    conditions = []
-
-    for i, c in enumerate(list(getattr(eval_cfg, "conditions", None) or [])):
-        raw_overrides = getattr(c, "mask_overrides", None)
-        overrides = dict(OmegaConf.to_container(raw_overrides)) if raw_overrides else None
-        conditions.append({
-            "name": getattr(c, "name", f"cond_{i}"),
-            "dataset_yaml": getattr(c, "dataset_yaml", default_dataset_yaml),
-            "mask_yaml": getattr(c, "mask_yaml", default_mask_yaml),
-            "mask_ratios": _ensure_list(getattr(c, "mask_ratios", None)) or None,
-            "mask_overrides": overrides,
-        })
-
-    grid_cfg = getattr(eval_cfg, "grid", None)
-    if grid_cfg is not None:
-        defaults_cfg = getattr(eval_cfg, "defaults", OmegaConf.create({}))
-        conditions.extend(_expand_grid_product(grid_cfg, defaults_cfg, default_dataset_yaml, default_mask_yaml))
-
-    if conditions:
-        return conditions
-
-    ratios = _ensure_list(getattr(eval_cfg, "mask_ratios", None))
-    if not ratios:
-        return [{
-            "name": "default",
-            "dataset_yaml": default_dataset_yaml,
-            "mask_yaml": default_mask_yaml,
-            "mask_ratios": None,
-            "mask_overrides": None,
-        }]
-    return [{
-        "name": f"ratio_{r}",
-        "dataset_yaml": default_dataset_yaml,
-        "mask_yaml": default_mask_yaml,
-        "mask_ratios": [int(r)],
-        "mask_overrides": None,
-    } for r in ratios]
-
-
-def load_dataset_and_mask(dataset_yaml, mask_yaml):
-    dataset_cfg = OmegaConf.load(dataset_yaml)
-    mask_cfg = OmegaConf.load(mask_yaml)
-    if getattr(dataset_cfg, "root", None) is None:
-        raise ValueError(f"dataset_cfg.root is missing in {dataset_yaml}")
-    if "${oc.env:" in str(dataset_cfg.root):
-        OmegaConf.resolve(dataset_cfg)
-    return dataset_cfg, mask_cfg
-
-
-def merge_mask_cfg(base_mask_cfg, mask_ratios=None, mask_overrides=None):
-    if not mask_ratios and not mask_overrides:
-        return base_mask_cfg
-    cfg = OmegaConf.create(OmegaConf.to_container(base_mask_cfg, resolve=True))
-    if mask_ratios:
-        cfg = OmegaConf.merge(cfg, OmegaConf.create({"ratios": [int(r) for r in mask_ratios]}))
-    if mask_overrides:
-        cfg = OmegaConf.merge(cfg, OmegaConf.create(dict(mask_overrides)))
-    return cfg
 
 
 def infer_eval_dir_from_ckpt(ckpt_path: Path, eval_profile: str, split: str, epoch: int) -> Path:
@@ -184,6 +70,7 @@ def main():
     eval_yaml = args.eval_yaml or (resolve_config_path("eval", args.eval) if args.eval else None)
 
     ckpt_raw = torch.load(ckpt_path, map_location="cpu")
+    validate_checkpoint_schema(ckpt_raw)
     model_cfg = _cfg_from_ckpt_raw(ckpt_raw, "model_cfg")
     model = build_model(model_cfg)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -195,6 +82,9 @@ def main():
     loader_cfg_base = _cfg_from_ckpt_raw(ckpt_raw, "loader_cfg")
     mask_cfg_base = _cfg_from_ckpt_raw(ckpt_raw, "mask_cfg")
     train_cfg = _cfg_from_ckpt_raw(ckpt_raw, "train_cfg")
+    require_cfg_fields(dataset_cfg_base, ["norm.mean", "norm.std"], "checkpoint dataset config")
+    require_cfg_fields(loader_cfg_base, ["batch_size"], "checkpoint loader config")
+    require_cfg_fields(train_cfg, ["metrics.scope", "metrics.report_both"], "checkpoint train config")
     state_epoch = int(ckpt_raw.get("epoch", 0))
     state_step = int(ckpt_raw.get("step", 0))
 
@@ -232,6 +122,13 @@ def main():
         if not default_dataset_yaml or not default_mask_yaml:
             raise ValueError("Checkpoint metadata missing config_paths.dataset_yaml/mask_yaml for eval grid usage.")
         grid = get_eval_grid(eval_cfg, default_dataset_yaml, default_mask_yaml)
+        if args.strict_config_match:
+            for cond in grid:
+                if cond.get("dataset_yaml") and Path(cond["dataset_yaml"]).stem != Path(default_dataset_yaml).stem:
+                    raise ValueError(
+                        f"Strict mode mismatch: eval condition dataset '{cond['dataset_yaml']}' "
+                        f"differs from checkpoint dataset '{default_dataset_yaml}'."
+                    )
     else:
         grid = [{
             "name": "default",
@@ -246,10 +143,12 @@ def main():
     results = []
     print(f"checkpoint={args.ckpt}  epoch={state_epoch} step={state_step}  split={args.split}")
     print(f"metric_scope={metric_scope}  report_both_metrics={report_both_metrics}")
-    dataset_name = Path(str(dataset_path)).stem if dataset_path else "unknown"
-    mask_name = Path(str(mask_path)).stem if mask_path else "unknown"
-    model_name = Path(str(model_path)).stem if model_path else "unknown"
-    print(f"startup: dataset={dataset_name} mask={mask_name} model={model_name}")
+    print(startup_summary_line(
+        dataset_yaml=dataset_path,
+        mask_yaml=mask_path,
+        model_yaml=model_path,
+        metric_scope=metric_scope,
+    ))
     print(f"eval_dir={run_dir}")
     print(f"grid: {[c['name'] for c in grid]}")
 
@@ -315,6 +214,8 @@ def main():
         "split": args.split,
         "eval_dir": str(run_dir.resolve()),
         "metric_scope": metric_scope,
+        "report_both_metrics": report_both_metrics,
+        "eval_profile": eval_profile,
         "conditions": results,
     }
     out_path = run_dir / "eval_results.json"

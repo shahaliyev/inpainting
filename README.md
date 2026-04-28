@@ -140,6 +140,7 @@ python train.py --resume --resume_ckpt runs/<train_run>/checkpoints/last.pt
 ```
 
 `--resume` now requires `--resume_ckpt` and continues in the same run folder.
+Use `--strict_config_match` if you want resume to fail on dataset/mask/model key mismatches.
 
 ## Running Evaluation
 
@@ -160,6 +161,7 @@ python eval.py --eval sanity_cpu --ckpt runs/<train_run>/checkpoints/last.pt --b
 
 `--eval` is optional. When not provided, eval runs a single default condition inferred from checkpoint metadata.
 For advanced use, `--eval_yaml` can still be used with a custom path.
+Use `--strict_config_match` to enforce that eval grid dataset defaults match checkpoint metadata.
 Metric scope is consistent by default (`mask`) and can be overridden with:
 
 ```bash

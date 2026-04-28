@@ -8,14 +8,13 @@ from omegaconf import OmegaConf
 
 from data.build import build_dataloader
 from models.build import build_model
-from training.checkpoint import load_checkpoint, make_checkpoint_dict, save_best_checkpoint, save_last_checkpoint
+from training.checkpoint import load_checkpoint, make_checkpoint_dict, save_best_checkpoint, save_last_checkpoint, validate_checkpoint_schema
 from training.engine import evaluate, train_one_epoch
 from training.logger import MetricsLogger
 from training.optim import build_optimizer, build_scheduler
+from utils.config_resolver import require_cfg_fields, resolve_config_path
+from utils.runtime_messages import startup_summary_line
 from utils.run_metadata import build_train_run_name, save_resolved_config, save_run_metadata
-
-CONFIGS_DIR = Path("configs")
-
 
 def parse_args():
     ap = argparse.ArgumentParser()
@@ -32,6 +31,8 @@ def parse_args():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--resume_ckpt", default=None)
+    ap.add_argument("--strict_config_match", action="store_true",
+                    help="Fail instead of warn when resume CLI keys mismatch checkpoint metadata.")
     return ap.parse_args()
 
 
@@ -93,13 +94,6 @@ def apply_overrides(args, dataset_cfg, loader_cfg, train_cfg):
         loader_cfg.batch_size = int(args.batch_size)
 
 
-def resolve_config_path(group: str, name: str) -> str:
-    path = CONFIGS_DIR / group / f"{name}.yaml"
-    if not path.exists():
-        raise FileNotFoundError(f"Unknown {group} config '{name}': {path}")
-    return str(path)
-
-
 def load_configs(config_paths):
     dataset_cfg = OmegaConf.load(config_paths["dataset_yaml"])
     loader_cfg = OmegaConf.load(config_paths["loader_yaml"])
@@ -138,6 +132,7 @@ def main():
 
     if args.resume:
         ckpt_raw = torch.load(Path(args.resume_ckpt), map_location="cpu")
+        validate_checkpoint_schema(ckpt_raw)
         config_paths = dict(ckpt_raw.get("config_paths", {}) or {})
         required = {"dataset_yaml", "loader_yaml", "mask_yaml", "model_yaml", "train_yaml"}
         if not required.issubset(config_paths.keys()):
@@ -153,6 +148,24 @@ def main():
         }
 
     dataset_cfg, loader_cfg, mask_cfg, model_cfg, train_cfg = load_configs(config_paths)
+    require_cfg_fields(dataset_cfg, ["root", "norm.mean", "norm.std"], "dataset config")
+    require_cfg_fields(loader_cfg, ["batch_size"], "loader config")
+    require_cfg_fields(train_cfg, [
+        "epochs",
+        "grad_accum_steps",
+        "mixed_precision",
+        "log_every_steps",
+        "vis_every_steps",
+        "eval_every_epochs",
+        "val_vis_every_epochs",
+        "ckpt.save_last_every_epochs",
+        "ckpt.save_best",
+        "ckpt.patience",
+        "metrics.scope",
+        "metrics.report_both",
+        "optimizer",
+        "scheduler",
+    ], "train config")
     apply_runtime_settings(args, train_cfg)
     apply_thread_settings(train_cfg)
     apply_overrides(args, dataset_cfg, loader_cfg, train_cfg)
@@ -217,13 +230,13 @@ def main():
         )
         save_resolved_config(run_dir, resolved_cfg)
     print(f"run_dir={run_dir}")
-    print(
-        f"startup: dataset={Path(config_paths['dataset_yaml']).stem} "
-        f"mask={Path(config_paths['mask_yaml']).stem} "
-        f"model={Path(config_paths['model_yaml']).stem} "
-        f"train={Path(config_paths['train_yaml']).stem} "
-        f"metric_scope={metric_scope}"
-    )
+    print(startup_summary_line(
+        dataset_yaml=config_paths.get("dataset_yaml"),
+        mask_yaml=config_paths.get("mask_yaml"),
+        model_yaml=config_paths.get("model_yaml"),
+        train_yaml=config_paths.get("train_yaml"),
+        metric_scope=metric_scope,
+    ))
 
     mean_list = list(dataset_cfg.norm.mean)
     std_list = list(dataset_cfg.norm.std)
@@ -246,7 +259,10 @@ def main():
             if cli_val:
                 ckpt_stem = Path(raw_paths.get(key, "")).stem
                 if ckpt_stem and ckpt_stem != cli_val:
-                    print(f"WARNING: resume checkpoint {key}='{ckpt_stem}' but CLI provided '{cli_val}'. Using checkpoint config.")
+                    msg = f"resume checkpoint {key}='{ckpt_stem}' but CLI provided '{cli_val}'. Using checkpoint config."
+                    if args.strict_config_match:
+                        raise ValueError(msg)
+                    print(f"WARNING: {msg}")
         print(f"resumed from {ckpt_path} | epoch={start_epoch} step={step} best_val_loss={best_val_loss:.6f}")
 
     model = compile_model(model_base, train_cfg)
