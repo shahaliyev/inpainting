@@ -117,43 +117,55 @@ Important defaults:
 - model config: `configs/model/unet.yaml`
 - train config: `configs/train/default.yaml`
 
-Outputs are written under `runs/<exp>/`, including checkpoints, metrics, and saved images.
+Outputs are written under an auto-generated run directory:
+`runs/<model>__<dataset>__<mask>__...__s<seed>__<timestamp>/`.
+Each run stores `run_meta.json` and `resolved_config.yaml` for reproducibility.
 
 Example with explicit configs:
 
 ```bash
-python train.py --dataset_yaml configs/dataset/carpet.yaml --mask_yaml configs/mask/block.yaml --model_yaml configs/model/unet.yaml --exp train_carpet
+python train.py --dataset_yaml configs/dataset/carpet.yaml --mask_yaml configs/mask/block.yaml --model_yaml configs/model/unet.yaml
 ```
 
 CPU sanity check (small run, fast feedback):
 
 ```bash
-python train.py --train_yaml configs/train/sanity_cpu.yaml --batch_size 2 --limit 32 --exp sanity_cpu_train
+python train.py --train_yaml configs/train/sanity_cpu.yaml --batch_size 2 --limit 32
 ```
 
 This runs only a tiny subset of data for 2 epochs, disables AMP/compile, and is intended only to verify the pipeline.
+
+Resume training from an existing checkpoint:
+
+```bash
+python train.py --resume --resume_ckpt runs/<train_run>/checkpoints/last.pt
+```
+
+`--resume` now requires `--resume_ckpt` and continues in the same run folder.
 
 ## Running Evaluation
 
 Evaluation must be given a checkpoint path:
 
 ```bash
-python eval.py --ckpt runs/train/checkpoints/last.pt
+python eval.py --ckpt runs/<train_run>/checkpoints/last.pt
 ```
 
-Example with explicit configs:
-
-```bash
-python eval.py --ckpt runs/train/checkpoints/best.pt --dataset_yaml configs/dataset/carpet.yaml --mask_yaml configs/mask/block.yaml --model_yaml configs/model/unet.yaml --exp eval_carpet
-```
+By default, evaluation infers model/dataset/mask/train/loader settings from checkpoint metadata and writes output to:
+`runs/<train_run>/eval/default/<split>/epoch_<n>/eval_results.json`.
 
 CPU sanity evaluation on the same tiny subset:
 
 ```bash
-python eval.py --eval_yaml configs/eval/sanity_cpu.yaml --ckpt runs/sanity_cpu_train/checkpoints/last.pt --batch_size 2 --limit 16 --exp sanity_cpu_eval
+python eval.py --eval_yaml configs/eval/sanity_cpu.yaml --ckpt runs/<train_run>/checkpoints/last.pt --batch_size 2 --limit 16
 ```
 
-Evaluation uses `configs/eval/default.yaml` by default and writes `eval_results.json` under `runs/<exp>/`.
+`--eval_yaml` is optional. When not provided, eval runs a single default condition inferred from checkpoint metadata.
+Metric scope is consistent by default (`mask`) and can be overridden with:
+
+```bash
+python eval.py --ckpt runs/<train_run>/checkpoints/best.pt --metric_scope full
+```
 
 ## What The Current Code Actually Does
 

@@ -32,6 +32,9 @@ log_every_steps: 1
 vis_every_steps: 0
 eval_every_epochs: 1
 val_vis_every_epochs: 0
+metrics:
+  scope: mask
+  report_both: true
 
 ckpt:
   save_last_every_epochs: 1

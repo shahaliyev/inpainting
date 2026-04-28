@@ -62,15 +62,28 @@ def train_one_epoch(model, dl_train, optimizer, scaler, device, loss_fn, use_amp
 
 
 @torch.no_grad()
-def evaluate(model, dl, device, loss_fn, use_amp, amp_dtype=None, epoch=None, global_step=None, logger=None, mean=None, std=None, save_vis=False, lpips_net=None):
+def evaluate(
+    model,
+    dl,
+    device,
+    loss_fn,
+    use_amp,
+    amp_dtype=None,
+    epoch=None,
+    global_step=None,
+    logger=None,
+    mean=None,
+    std=None,
+    save_vis=False,
+    lpips_net=None,
+    metric_scope="mask",
+    report_both=True,
+):
     model.eval()
     total_loss = 0.0
     total_weight = 0.0
     vis_saved = False
-    # Image-weighted sums for full-image metrics (mean over images)
-    total_psnr = 0.0
-    total_ssim = 0.0
-    total_lpips = 0.0
+    metric_sums = {}
     total_images = 0
     compute_full_metrics = mean is not None and std is not None
 
@@ -88,12 +101,20 @@ def evaluate(model, dl, device, loss_fn, use_amp, amp_dtype=None, epoch=None, gl
         total_weight += mask.sum().item() * img.shape[1]
 
         if compute_full_metrics:
-            m = compute_metrics(pred, img, mask, mean, std, lpips_net=lpips_net)
+            m = compute_metrics(
+                pred,
+                img,
+                mask,
+                mean,
+                std,
+                lpips_net=lpips_net,
+                metric_scope=metric_scope,
+                report_both=report_both,
+            )
             b = pred.shape[0]
-            total_psnr += m["psnr_mask"] * b
-            total_ssim += m["ssim_full"] * b
-            if "lpips_full" in m:
-                total_lpips += m["lpips_full"] * b
+            for k, v in m.items():
+                if isinstance(v, (int, float)):
+                    metric_sums[k] = metric_sums.get(k, 0.0) + float(v) * b
             total_images += b
 
         if logger is not None and save_vis and not vis_saved:
@@ -102,10 +123,9 @@ def evaluate(model, dl, device, loss_fn, use_amp, amp_dtype=None, epoch=None, gl
             vis_saved = True
 
     val_loss = total_loss / (total_weight + 1e-8)
-    out = {"val_loss": val_loss, "l1_mask": val_loss}
+    out = {"val_loss": val_loss}
     if compute_full_metrics and total_images > 0:
-        out["psnr_mask"] = total_psnr / total_images
-        out["ssim_full"] = total_ssim / total_images
-        if lpips_net is not None:
-            out["lpips_full"] = total_lpips / total_images
+        for k, v in metric_sums.items():
+            out[k] = v / total_images
+    out["metric_scope"] = str(metric_scope).lower()
     return out

@@ -1,7 +1,7 @@
 """
-Evaluation metrics for inpainting: L1 (masked region), PSNR, SSIM, LPIPS (full image).
-All expect normalized tensors (B, C, H, W); mean/std used to denormalize to [0, 1] for PSNR/SSIM.
-LPIPS uses normalized [-1, 1] input by default.
+Evaluation metrics for inpainting with configurable metric scope.
+All expect normalized tensors (B, C, H, W). mean/std are used to denormalize
+to [0, 1] for PSNR/SSIM. LPIPS uses normalized [-1, 1] input by default.
 """
 
 from typing import Optional
@@ -22,6 +22,12 @@ def l1_mask(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> tor
     # mask: (B, 1, H, W), expand to channels
     denom = mask.sum() * target.shape[1] + 1e-8
     return (per_pix * mask).sum() / denom
+
+
+def l1_full(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """L1 over the reconstructed full image."""
+    recon = target * (1.0 - mask) + pred * mask
+    return torch.abs(recon - target).mean()
 
 
 def psnr_full(
@@ -116,6 +122,20 @@ def lpips_full(
     return d.mean().item()
 
 
+def lpips_mask(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    lpips_net: torch.nn.Module,
+) -> float:
+    """Masked LPIPS by zeroing unmasked pixels in both images."""
+    pred_masked = pred * mask
+    target_masked = target * mask
+    with torch.no_grad():
+        d = lpips_net(pred_masked, target_masked)
+    return d.mean().item()
+
+
 def compute_metrics(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -123,13 +143,45 @@ def compute_metrics(
     mean: torch.Tensor,
     std: torch.Tensor,
     lpips_net: Optional[torch.nn.Module] = None,
+    metric_scope: str = "mask",
+    report_both: bool = True,
 ) -> dict[str, float]:
-    """Compute L1 (mask), PSNR, SSIM, and optionally LPIPS (full image)."""
-    out = {
-        "l1_mask": l1_mask(pred, target, mask).item(),
-        "psnr_mask": psnr_mask(pred, target, mask, mean, std),
-        "ssim_full": ssim_full(pred, target, mask, mean, std),
-    }
+    """Compute scope-consistent primary metrics; optionally include both scopes."""
+    scope = str(metric_scope).lower()
+    if scope not in {"mask", "full"}:
+        raise ValueError(f"Unsupported metric_scope: {metric_scope}. Use 'mask' or 'full'.")
+
+    l1_m = l1_mask(pred, target, mask).item()
+    l1_f = l1_full(pred, target, mask).item()
+    psnr_m = psnr_mask(pred, target, mask, mean, std)
+    psnr_f = psnr_full(pred, target, mask, mean, std)
+    ssim_m = ssim_mask(pred, target, mask, mean, std)
+    ssim_f = ssim_full(pred, target, mask, mean, std)
+
+    out = {"metric_scope": scope}
+    if scope == "mask":
+        out["l1"] = l1_m
+        out["psnr"] = psnr_m
+        out["ssim"] = ssim_m
+    else:
+        out["l1"] = l1_f
+        out["psnr"] = psnr_f
+        out["ssim"] = ssim_f
+
     if lpips_net is not None:
-        out["lpips_full"] = lpips_full(pred, target, mask, lpips_net)
+        lpips_m = lpips_mask(pred, target, mask, lpips_net)
+        lpips_f = lpips_full(pred, target, mask, lpips_net)
+        out["lpips"] = lpips_m if scope == "mask" else lpips_f
+        if report_both:
+            out["lpips_mask"] = lpips_m
+            out["lpips_full"] = lpips_f
+
+    if report_both:
+        out["l1_mask"] = l1_m
+        out["l1_full"] = l1_f
+        out["psnr_mask"] = psnr_m
+        out["psnr_full"] = psnr_f
+        out["ssim_mask"] = ssim_m
+        out["ssim_full"] = ssim_f
+
     return out

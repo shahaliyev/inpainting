@@ -12,6 +12,7 @@ from training.checkpoint import load_checkpoint, make_checkpoint_dict, save_best
 from training.engine import evaluate, train_one_epoch
 from training.logger import MetricsLogger
 from training.optim import build_optimizer, build_scheduler
+from utils.run_metadata import build_train_run_name, save_resolved_config, save_run_metadata
 
 
 def parse_args():
@@ -22,7 +23,6 @@ def parse_args():
     ap.add_argument("--model_yaml", default="configs/model/unet.yaml")
     ap.add_argument("--train_yaml", default="configs/train/default.yaml")
     ap.add_argument("--runs_dir", default="runs")
-    ap.add_argument("--exp", default="train")
     ap.add_argument("--split", default="train")
     ap.add_argument("--val_split", default="val")
     ap.add_argument("--limit", type=int, default=None)
@@ -143,6 +143,11 @@ def main():
     save_last_every_epochs = int(getattr(train_cfg.ckpt, "save_last_every_epochs", 1))
     save_best = bool(getattr(train_cfg.ckpt, "save_best", True))
     patience = int(getattr(train_cfg.ckpt, "patience", 0))
+    metrics_cfg = getattr(train_cfg, "metrics", OmegaConf.create({}))
+    metric_scope = str(getattr(metrics_cfg, "scope", "mask")).lower()
+    report_both_metrics = bool(getattr(metrics_cfg, "report_both", True))
+    if metric_scope not in {"mask", "full"}:
+        raise ValueError(f"Unsupported train.metrics.scope: {metric_scope}. Use 'mask' or 'full'.")
 
     dl_train, dl_val = build_dataloaders(args, dataset_cfg, loader_cfg, mask_cfg)
 
@@ -155,10 +160,52 @@ def main():
     scaler = torch.amp.GradScaler("cuda", enabled=use_grad_scaler)
     loss_fn = nn.L1Loss(reduction="none")
 
-    run_dir = Path(args.runs_dir) / args.exp
-    checkpoint_dir = run_dir / "checkpoints"
+    if args.resume:
+        if args.resume_ckpt is None:
+            raise ValueError("--resume requires --resume_ckpt pointing to an existing checkpoint.")
+        ckpt_path = Path(args.resume_ckpt)
+        if ckpt_path.parent.name != "checkpoints":
+            raise ValueError(f"--resume_ckpt must be inside a checkpoints directory: {ckpt_path}")
+        checkpoint_dir = ckpt_path.parent
+        run_dir = checkpoint_dir.parent
+        run_name = run_dir.name
+    else:
+        run_name = build_train_run_name(
+            model_yaml=args.model_yaml,
+            dataset_yaml=args.dataset_yaml,
+            mask_cfg=mask_cfg,
+            seed=args.seed,
+        )
+        run_dir = Path(args.runs_dir) / run_name
+        checkpoint_dir = run_dir / "checkpoints"
+
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     logger = MetricsLogger(run_dir)
+    resolved_cfg = {
+        "dataset_cfg": OmegaConf.to_container(dataset_cfg, resolve=True),
+        "loader_cfg": OmegaConf.to_container(loader_cfg, resolve=True),
+        "mask_cfg": OmegaConf.to_container(mask_cfg, resolve=True),
+        "model_cfg": OmegaConf.to_container(model_cfg, resolve=True),
+        "train_cfg": OmegaConf.to_container(train_cfg, resolve=True),
+    }
+    config_paths = {
+        "dataset_yaml": args.dataset_yaml,
+        "loader_yaml": args.loader_yaml,
+        "mask_yaml": args.mask_yaml,
+        "model_yaml": args.model_yaml,
+        "train_yaml": args.train_yaml,
+    }
+    if not args.resume:
+        save_run_metadata(
+            run_dir,
+            run_name=run_name,
+            seed=args.seed,
+            args_dict=vars(args),
+            config_paths=config_paths,
+            resolved_cfg=resolved_cfg,
+        )
+        save_resolved_config(run_dir, resolved_cfg)
+    print(f"run_dir={run_dir}")
 
     mean_list = list(getattr(dataset_cfg.norm, "mean", [0.5, 0.5, 0.5]))
     std_list = list(getattr(dataset_cfg.norm, "std", [0.5, 0.5, 0.5]))
@@ -192,7 +239,22 @@ def main():
 
         if eval_every_epochs > 0 and epoch % eval_every_epochs == 0:
             save_val_vis = val_vis_every_epochs > 0 and epoch % val_vis_every_epochs == 0
-            val_out = evaluate(model=model, dl=dl_val, device=device, loss_fn=loss_fn, use_amp=use_amp, amp_dtype=amp_dtype, epoch=epoch, global_step=step, logger=logger, mean=mean, std=std, save_vis=save_val_vis)
+            val_out = evaluate(
+                model=model,
+                dl=dl_val,
+                device=device,
+                loss_fn=loss_fn,
+                use_amp=use_amp,
+                amp_dtype=amp_dtype,
+                epoch=epoch,
+                global_step=step,
+                logger=logger,
+                mean=mean,
+                std=std,
+                save_vis=save_val_vis,
+                metric_scope=metric_scope,
+                report_both=report_both_metrics,
+            )
             val_loss = float(val_out["val_loss"])
             logger.log(epoch=epoch, step=step, split="val", loss=val_loss, lr=lr_now)
             print(f"epoch={epoch} val_loss={val_loss:.6f}")
@@ -201,7 +263,7 @@ def main():
                 best_val_loss = val_loss
                 patience_counter = 0
                 if save_best:
-                    best_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
+                    best_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, loader_cfg=loader_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, config_paths=config_paths, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
                     best_path = save_best_checkpoint(checkpoint_dir, best_ckpt)
                     print(f"saved best checkpoint: {best_path}")
             else:
@@ -214,11 +276,11 @@ def main():
             scheduler.step()
 
         if save_last_every_epochs > 0 and epoch % save_last_every_epochs == 0:
-            last_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
+            last_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, loader_cfg=loader_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, config_paths=config_paths, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
             last_path = save_last_checkpoint(checkpoint_dir, last_ckpt)
             print(f"saved last checkpoint: {last_path}")
 
-    final_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, epoch=epochs, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
+    final_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, loader_cfg=loader_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, config_paths=config_paths, epoch=epochs, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
     final_path = save_last_checkpoint(checkpoint_dir, final_ckpt)
     print(f"done. saved: {final_path}")
 
