@@ -114,6 +114,10 @@ def main():
     dataset_path = config_paths.get("dataset_yaml")
     mask_path = config_paths.get("mask_yaml")
     model_path = config_paths.get("model_yaml")
+    if args.strict_config_match:
+        missing = [k for k, v in {"dataset_yaml": dataset_path, "mask_yaml": mask_path, "model_yaml": model_path}.items() if not v]
+        if missing:
+            raise ValueError(f"Strict mode requires checkpoint config_paths keys, missing: {missing}")
 
     if eval_yaml:
         eval_cfg = OmegaConf.load(eval_yaml)
@@ -128,6 +132,11 @@ def main():
                     raise ValueError(
                         f"Strict mode mismatch: eval condition dataset '{cond['dataset_yaml']}' "
                         f"differs from checkpoint dataset '{default_dataset_yaml}'."
+                    )
+                if cond.get("mask_yaml") and Path(cond["mask_yaml"]).stem != Path(default_mask_yaml).stem:
+                    raise ValueError(
+                        f"Strict mode mismatch: eval condition mask '{cond['mask_yaml']}' "
+                        f"differs from checkpoint mask '{default_mask_yaml}'."
                     )
     else:
         grid = [{

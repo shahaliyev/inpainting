@@ -85,7 +85,7 @@ def apply_thread_settings(train_cfg):
         torch.set_num_interop_threads(int(threads_cfg.interop))
 
 
-def apply_overrides(args, dataset_cfg, loader_cfg, train_cfg):
+def apply_overrides(args, dataset_cfg, loader_cfg):
     if args.limit is not None:
         dataset_cfg.limit = int(args.limit)
         dataset_cfg.limit_shuffle = True
@@ -168,7 +168,7 @@ def main():
     ], "train config")
     apply_runtime_settings(args, train_cfg)
     apply_thread_settings(train_cfg)
-    apply_overrides(args, dataset_cfg, loader_cfg, train_cfg)
+    apply_overrides(args, dataset_cfg, loader_cfg)
 
     epochs = int(train_cfg.epochs)
     grad_accum_steps = int(train_cfg.grad_accum_steps)

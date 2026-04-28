@@ -1,10 +1,19 @@
 # Inpainting Experiments
 
-This repository trains and evaluates an image inpainting model using YAML configs for the dataset, loader, mask, model, and training settings. The dependency files are aligned to a Python 3.10 environment.
+Train and evaluate image inpainting models with key-based configs and checkpoint-first evaluation.
+
+## Quick Start
+
+1. Set `DATA_PATH`.
+2. Run train.
+3. Run eval from the generated checkpoint.
+
+```bash
+python train.py --dataset carpet --mask mixed --model unet
+python eval.py --ckpt runs/<train_run>/checkpoints/best.pt
+```
 
 ## Install
-
-Create and activate a virtual environment from the repository root.
 
 Windows PowerShell:
 
@@ -24,39 +33,20 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-For a fully pinned environment, install from `requirements.lock.txt` instead:
+Pinned environment:
 
 ```bash
 pip install -r requirements.lock.txt
 ```
 
-## Project Layout
-
-Key directories:
-
-- `configs/` - YAML configs used by training and evaluation
-- `data/` - dataset and dataloader code
-- `mask/` - mask generator code
-- `models/` - model code
-- `training/` - training loop, checkpointing, logging, optimizer setup
-- `utils/` - metrics, visualization, notebook helpers
-- `tools/` - helper scripts such as dataset extraction
-- `runs/` - output directory for checkpoints, metrics, and visualizations
-
 ## Dataset Setup
 
-Datasets are expected outside the repository and are located via the `DATA_PATH` environment variable.
+Datasets are resolved from `DATA_PATH`.
 
 Windows PowerShell:
 
 ```powershell
 $env:DATA_PATH = "D:\datasets"
-```
-
-Windows `cmd`:
-
-```bat
-set DATA_PATH=D:\datasets
 ```
 
 Linux / macOS:
@@ -65,126 +55,115 @@ Linux / macOS:
 export DATA_PATH=/data
 ```
 
-Current dataset configs expect:
+Expected layouts:
 
-### Carpet
+- `carpet`: `%DATA_PATH%/carpet/images/{train,val}/{Cam_L,Cam_R}`
+- `dtd`: `%DATA_PATH%/dtd/images` and `%DATA_PATH%/dtd/labels/{train1,val1,test1}.txt`
 
-`configs/dataset/carpet.yaml` resolves to:
+If `DATA_PATH` is missing or folders are incorrect, train/eval will fail.
 
-```text
-%DATA_PATH%/carpet/
-  images/
-    train/
-      Cam_L/
-      Cam_R/
-    val/
-      Cam_L/
-      Cam_R/
-```
+## Training
 
-Supported file extensions are `jpg`, `jpeg`, and `png`.
-
-### DTD
-
-`configs/dataset/dtd.yaml` resolves to:
-
-```text
-%DATA_PATH%/dtd/
-  images/
-  labels/
-    train1.txt
-    val1.txt
-    test1.txt
-```
-
-The split files list image paths relative to `images/`.
-
-If `DATA_PATH` is missing or the expected folders/files are not present, training and evaluation will fail or produce empty datasets.
-
-## Running Training
-
-Run from the repository root:
+Fresh run:
 
 ```bash
 python train.py --dataset carpet --mask mixed --model unet
 ```
 
-Important defaults:
-
-- loader config key: `default` → `configs/loader/default.yaml`
-- train config key: `default` → `configs/train/default.yaml`
-- dataset, mask, and model keys are required for fresh training
-
-Outputs are written under an auto-generated run directory:
-`runs/<model>__<dataset>__<mask>__...__s<seed>__<timestamp>/`.
-Each run stores `run_meta.json` and `resolved_config.yaml` for reproducibility.
-
-Example with explicit configs:
+Useful variants:
 
 ```bash
 python train.py --dataset carpet --mask block --model unet
-```
-
-CPU sanity check (small run, fast feedback):
-
-```bash
 python train.py --dataset carpet --mask mixed --model unet --train sanity_cpu --batch_size 2 --limit 32
 ```
 
-This runs only a tiny subset of data for 2 epochs, disables AMP/compile, and is intended only to verify the pipeline.
-
-Resume training from an existing checkpoint:
+Resume:
 
 ```bash
 python train.py --resume --resume_ckpt runs/<train_run>/checkpoints/last.pt
 ```
 
-`--resume` now requires `--resume_ckpt` and continues in the same run folder.
-Use `--strict_config_match` if you want resume to fail on dataset/mask/model key mismatches.
+`--strict_config_match` makes resume fail on dataset/mask/model key mismatches.
 
-## Running Evaluation
+Defaults:
 
-Evaluation must be given a checkpoint path:
+- `--loader default` -> `configs/loader/default.yaml`
+- `--train default` -> `configs/train/default.yaml`
+- `--dataset`, `--mask`, `--model` are required for fresh runs
+
+Outputs:
+
+- `runs/<auto_run_name>/checkpoints/{best.pt,last.pt}`
+- `runs/<auto_run_name>/metrics.csv`
+- `runs/<auto_run_name>/run_meta.json`
+- `runs/<auto_run_name>/resolved_config.yaml`
+
+## Evaluation
+
+Basic eval:
 
 ```bash
-python eval.py --ckpt runs/<train_run>/checkpoints/last.pt
+python eval.py --ckpt runs/<train_run>/checkpoints/best.pt
 ```
 
-By default, evaluation infers model/dataset/mask/train/loader settings from checkpoint metadata and writes output to:
-`runs/<train_run>/eval/default/<split>/epoch_<n>/eval_results.json`.
-
-CPU sanity evaluation on the same tiny subset:
+Eval profile:
 
 ```bash
 python eval.py --eval sanity_cpu --ckpt runs/<train_run>/checkpoints/last.pt --batch_size 2 --limit 16
+python eval.py --eval imagenet-degradation --ckpt runs/<train_run>/checkpoints/best.pt
 ```
 
-`--eval` is optional. When not provided, eval runs a single default condition inferred from checkpoint metadata.
-For advanced use, `--eval_yaml` can still be used with a custom path.
-Use `--strict_config_match` to enforce that eval grid dataset defaults match checkpoint metadata.
-Metric scope is consistent by default (`mask`) and can be overridden with:
+Advanced profile path:
+
+```bash
+python eval.py --eval_yaml configs/eval/default.yaml --ckpt runs/<train_run>/checkpoints/best.pt
+```
+
+Strict mode:
+
+- `--strict_config_match` enforces checkpoint/profile consistency checks.
+
+Metric scope:
 
 ```bash
 python eval.py --ckpt runs/<train_run>/checkpoints/best.pt --metric_scope full
 ```
 
-## What The Current Code Actually Does
+Default eval output:
 
-- Training requires explicit dataset/mask/model keys and resolves them under `configs/<group>/<name>.yaml`.
-- Evaluation is checkpoint-first and infers model/dataset/mask/train/loader configs from the checkpoint.
-- Primary metric scope is consistent (`mask` by default), with optional reporting of both mask/full variants.
-- The current implementation does not match older README claims about fixed multi-placement mask protocols such as "25 masks per image", so those claims have been removed here.
+`runs/<train_run>/eval/<eval_profile>/<split>/epoch_<n>/eval_results.json`
 
-## Dataset Extraction Helper
-
-If your dataset is packaged as an archive, `tools/extract.py` can unpack it into `DATA_PATH`:
+## Plot Degradation Curves
 
 ```bash
-python tools/extract.py --archive path/to/archive.zip --name carpet
+python tools/plot_degradation.py --results runs/<train_run>/eval/imagenet-degradation/val/epoch_<n>/eval_results.json
 ```
+
+## Project Layout
+
+- `configs/` configuration files
+- `data/` dataset and dataloader code
+- `mask/` mask generators
+- `models/` model definitions
+- `training/` train/eval loop helpers, checkpointing, optimizer, logger
+- `evaluation/` eval profile/grid utilities
+- `utils/` metrics, visualization, run/config helpers
+- `tools/` helper scripts
+- `runs/` outputs
 
 ## Notes
 
-- Run commands from the repository root so the default relative config paths resolve correctly.
-- `requirements.txt` is the editable dependency list.
-- `requirements.lock.txt` is the pinned Python 3.10 environment file.
+- Run commands from repository root.
+- `requirements.txt` is editable dependency list.
+- `requirements.lock.txt` is pinned environment.
+
+## Troubleshooting
+
+- `dataset_cfg.root is missing` or empty dataset:
+  - Ensure `DATA_PATH` is set and dataset folders match expected layout.
+- `Unsupported checkpoint format version`:
+  - Checkpoint was created with older code; re-train or use a checkpoint from current code.
+- `ImportError: lpips` during eval:
+  - Install dependencies from `requirements.txt` (or run eval with `--no_lpips`).
+- `ImportError: matplotlib` when plotting:
+  - Install dependencies from `requirements.txt`.

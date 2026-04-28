@@ -140,8 +140,8 @@ def main():
     print(f"Freeform    : {[n for n, _ in freeform_data]} strokes")
 
     if not ratio_data and not freeform_data:
-        print("No plottable conditions found. Check that eval_results.json was produced "
-              "with configs/eval/imagenet-degradation.yaml.")
+        print("No plottable conditions found. Ensure eval_results.json contains "
+              "ratio-based (mask_ratios) and/or freeform (mask_overrides.num_strokes) conditions.")
         return
 
     saved = []

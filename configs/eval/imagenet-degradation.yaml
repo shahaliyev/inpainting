@@ -9,13 +9,11 @@
 #
 # Usage:
 #   python eval.py \
-#     --eval_yaml  configs/eval/imagenet-degradation.yaml \
-#     --dataset_yaml configs/dataset/imagenet-simple.yaml \
-#     --ckpt runs/train/checkpoints/best.pt \
-#     --exp degradation_simple
+#     --eval imagenet-degradation \
+#     --ckpt runs/<train_run>/checkpoints/best.pt
 #
 #   python tools/plot_degradation.py \
-#     --results runs/degradation_simple/eval_results.json
+#     --results runs/<train_run>/eval/imagenet-degradation/val/epoch_<n>/eval_results.json
 
 # ── Freeform: 6 stroke levels via mask_overrides ──────────────────────────
 conditions:
