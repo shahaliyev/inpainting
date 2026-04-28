@@ -113,12 +113,16 @@ def lpips_full(
     pred: torch.Tensor,
     target: torch.Tensor,
     mask: torch.Tensor,
+    mean: torch.Tensor,
+    std: torch.Tensor,
     lpips_net: torch.nn.Module,
 ) -> float:
-    """Full-image LPIPS (perceptual). Recon vs target; expects normalized [-1, 1]."""
+    """Full-image LPIPS (perceptual), robust to dataset normalization."""
     recon = target * (1.0 - mask) + pred * mask
+    recon_01 = _denorm(recon, mean, std)
+    target_01 = _denorm(target, mean, std)
     with torch.no_grad():
-        d = lpips_net(recon, target)
+        d = lpips_net(recon_01, target_01, normalize=True)
     return d.mean().item()
 
 
@@ -126,13 +130,17 @@ def lpips_mask(
     pred: torch.Tensor,
     target: torch.Tensor,
     mask: torch.Tensor,
+    mean: torch.Tensor,
+    std: torch.Tensor,
     lpips_net: torch.nn.Module,
 ) -> float:
-    """Masked LPIPS by zeroing unmasked pixels in both images."""
-    pred_masked = pred * mask
-    target_masked = target * mask
+    """Masked LPIPS by zeroing unmasked pixels, robust to dataset normalization."""
+    pred_01 = _denorm(pred, mean, std)
+    target_01 = _denorm(target, mean, std)
+    pred_masked = pred_01 * mask
+    target_masked = target_01 * mask
     with torch.no_grad():
-        d = lpips_net(pred_masked, target_masked)
+        d = lpips_net(pred_masked, target_masked, normalize=True)
     return d.mean().item()
 
 
@@ -169,8 +177,8 @@ def compute_metrics(
         out["ssim"] = ssim_f
 
     if lpips_net is not None:
-        lpips_m = lpips_mask(pred, target, mask, lpips_net)
-        lpips_f = lpips_full(pred, target, mask, lpips_net)
+        lpips_m = lpips_mask(pred, target, mask, mean, std, lpips_net)
+        lpips_f = lpips_full(pred, target, mask, mean, std, lpips_net)
         out["lpips"] = lpips_m if scope == "mask" else lpips_f
         if report_both:
             out["lpips_mask"] = lpips_m

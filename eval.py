@@ -14,7 +14,7 @@ from training.checkpoint import validate_checkpoint_schema
 from training.engine import evaluate
 from training.logger import MetricsLogger
 from utils.config_resolver import require_cfg_fields
-from utils.runtime_messages import startup_summary_line
+from utils.runtime_messages import cfg_name, startup_summary_line
 
 def parse_args():
     ap = argparse.ArgumentParser()
@@ -218,13 +218,18 @@ def main():
 
     summary = {
         "checkpoint": str(ckpt_path.resolve()),
+        "checkpoint_name": ckpt_path.name,
         "epoch": state_epoch,
         "step": state_step,
         "split": args.split,
         "eval_dir": str(run_dir.resolve()),
+        "eval_protocol": eval_profile,
         "metric_scope": metric_scope,
         "report_both_metrics": report_both_metrics,
         "eval_profile": eval_profile,
+        "dataset": cfg_name(dataset_path),
+        "mask": cfg_name(mask_path),
+        "model": cfg_name(model_path),
         "conditions": results,
     }
     out_path = run_dir / "eval_results.json"

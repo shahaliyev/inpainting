@@ -7,6 +7,13 @@ from utils.vis import save_triplet
 
 
 class MetricsLogger:
+    METRIC_COLUMNS = [
+        "loss_l1",
+        "loss_perceptual",
+        "loss_tv",
+        "loss_total",
+    ]
+
     def __init__(self, run_dir):
         self.run_dir = Path(run_dir)
         self.metrics_path = self.run_dir / "metrics.csv"
@@ -17,12 +24,14 @@ class MetricsLogger:
         if not self.metrics_path.exists():
             with open(self.metrics_path, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["epoch", "step", "split", "loss", "lr"])
+                writer.writerow(["epoch", "step", "split", "loss", "lr", *self.METRIC_COLUMNS])
 
-    def log(self, epoch, step, split, loss, lr):
+    def log(self, epoch, step, split, loss, lr, terms=None):
+        terms = terms or {}
+        extras = [terms.get(k, "") for k in self.METRIC_COLUMNS]
         with open(self.metrics_path, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, step, split, loss, lr])
+            writer.writerow([epoch, step, split, loss, lr, *extras])
 
     def save_train_triplet(
         self,

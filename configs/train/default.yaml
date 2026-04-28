@@ -35,10 +35,22 @@ val_vis_every_epochs: 1
 metrics:
   scope: mask
   report_both: true
+loss:
+  name: l1
+  weights:
+    l1: 1.0
+    perceptual: 0.0
+    tv: 0.0
+  perceptual:
+    net: vgg
 
 ckpt:
   save_last_every_epochs: 1
   save_best: true
-  # Stop training after this many epochs with no val loss improvement.
+  # Stop training after this many eval checks with no val loss improvement.
   # 0 disables early stopping.
-  patience: 10
+  patience: 15
+  # Do not consider early stopping before this epoch.
+  min_epochs: 30
+  # Minimum required val_loss improvement to reset patience.
+  min_delta: 0.0001

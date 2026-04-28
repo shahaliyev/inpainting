@@ -1,4 +1,4 @@
-epochs: 2
+epochs: 100
 
 optimizer:
   name: adamw
@@ -8,16 +8,16 @@ optimizer:
 
 scheduler:
   name: cosine
-  t_max: 2
+  t_max: 100
   eta_min: 1e-6
 
 grad_accum_steps: 1
-mixed_precision: false
+mixed_precision: true
 amp_dtype: bfloat16
-tf32: false
+tf32: true
 
 compile:
-  enabled: false
+  enabled: true
   mode: default
   fullgraph: false
   dynamic: false
@@ -28,13 +28,16 @@ threads:
   torch: 1
   interop: 1
 
-log_every_steps: 1
-vis_every_steps: 0
+log_every_steps: 100
+vis_every_steps: 1000
 eval_every_epochs: 1
-val_vis_every_epochs: 0
+val_vis_every_epochs: 1
+
 metrics:
   scope: mask
   report_both: true
+
+# Benchmark v1 is intentionally anchored on masked L1 only.
 loss:
   name: l1
   weights:
@@ -49,8 +52,8 @@ ckpt:
   save_best: true
   # Stop training after this many eval checks with no val loss improvement.
   # 0 disables early stopping.
-  patience: 0
-  # No warmup needed for sanity profile.
-  min_epochs: 0
-  # No tolerance needed for sanity profile.
-  min_delta: 0.0
+  patience: 25
+  # Do not consider early stopping before this epoch.
+  min_epochs: 70
+  # Minimum required val_loss improvement to reset patience.
+  min_delta: 0.0001

@@ -75,6 +75,7 @@ Useful variants:
 ```bash
 python train.py --dataset carpet --mask block --model unet
 python train.py --dataset carpet --mask mixed --model unet --train sanity_cpu --batch_size 2 --limit 32
+python train.py --dataset carpet --mask mixed --model unet --train benchmark_v1
 ```
 
 Resume:
@@ -90,6 +91,16 @@ Defaults:
 - `--loader default` -> `configs/loader/default.yaml`
 - `--train default` -> `configs/train/default.yaml`
 - `--dataset`, `--mask`, `--model` are required for fresh runs
+
+Loss configuration (in train config, not CLI):
+
+- `loss.name`: `l1`, `l1_perceptual`, `l1_perceptual_tv`
+- `loss.weights`: weighted combination terms (`l1`, `perceptual`, `tv`)
+- `loss.perceptual.net`: LPIPS backbone (`vgg` or `alex`)
+- `ckpt.patience`: early-stop patience counted in validation checks (not raw wall-clock time)
+- `ckpt.min_epochs`: warmup period before early stopping is allowed
+- `ckpt.min_delta`: minimum val-loss improvement required to reset patience
+- Early stopping monitors `val_loss` (masked L1) for stable cross-run comparison.
 
 Outputs:
 
@@ -110,7 +121,7 @@ Eval profile:
 
 ```bash
 python eval.py --eval sanity_cpu --ckpt runs/<train_run>/checkpoints/last.pt --batch_size 2 --limit 16
-python eval.py --eval imagenet-degradation --ckpt runs/<train_run>/checkpoints/best.pt
+python eval.py --eval degradation_v1 --ckpt runs/<train_run>/checkpoints/best.pt
 ```
 
 Advanced profile path:
@@ -136,7 +147,18 @@ Default eval output:
 ## Plot Degradation Curves
 
 ```bash
-python tools/plot_degradation.py --results runs/<train_run>/eval/imagenet-degradation/val/epoch_<n>/eval_results.json
+python tools/plot_degradation.py --results runs/<train_run>/eval/degradation_v1/val/epoch_<n>/eval_results.json
+python tools/plot_degradation.py --results runs/<run_a>/eval/degradation_v1/val/epoch_<n>/eval_results.json runs/<run_b>/eval/degradation_v1/val/epoch_<n>/eval_results.json --labels "modelA-datasetX" "modelB-datasetY" --out_dir figures/degradation_compare
+```
+
+## Benchmark Protocol (v1)
+
+Keep protocol fixed when comparing models/datasets.
+
+```bash
+python train.py --dataset <dataset_key> --mask <mask_key> --model <model_key> --train benchmark_v1
+python eval.py --eval degradation_v1 --ckpt runs/<train_run>/checkpoints/best.pt
+python tools/plot_degradation.py --results runs/<train_run>/eval/degradation_v1/val/epoch_<n>/eval_results.json
 ```
 
 ## Project Layout

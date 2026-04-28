@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 from omegaconf import OmegaConf
 
 from data.build import build_dataloader
@@ -11,6 +10,7 @@ from models.build import build_model
 from training.checkpoint import load_checkpoint, make_checkpoint_dict, save_best_checkpoint, save_last_checkpoint, validate_checkpoint_schema
 from training.engine import evaluate, train_one_epoch
 from training.logger import MetricsLogger
+from training.losses import build_train_loss
 from training.optim import build_optimizer, build_scheduler
 from utils.config_resolver import require_cfg_fields, resolve_config_path
 from utils.runtime_messages import startup_summary_line
@@ -161,8 +161,14 @@ def main():
         "ckpt.save_last_every_epochs",
         "ckpt.save_best",
         "ckpt.patience",
+        "ckpt.min_epochs",
+        "ckpt.min_delta",
         "metrics.scope",
         "metrics.report_both",
+        "loss.name",
+        "loss.weights.l1",
+        "loss.weights.perceptual",
+        "loss.weights.tv",
         "optimizer",
         "scheduler",
     ], "train config")
@@ -180,6 +186,12 @@ def main():
     save_last_every_epochs = int(train_cfg.ckpt.save_last_every_epochs)
     save_best = bool(train_cfg.ckpt.save_best)
     patience = int(train_cfg.ckpt.patience)
+    min_epochs = int(train_cfg.ckpt.min_epochs)
+    min_delta = float(train_cfg.ckpt.min_delta)
+    if min_epochs < 0:
+        raise ValueError("train.ckpt.min_epochs must be >= 0.")
+    if min_delta < 0:
+        raise ValueError("train.ckpt.min_delta must be >= 0.")
     metric_scope = str(train_cfg.metrics.scope).lower()
     report_both_metrics = bool(train_cfg.metrics.report_both)
     if metric_scope not in {"mask", "full"}:
@@ -194,7 +206,8 @@ def main():
     scheduler = build_scheduler(optimizer, train_cfg.scheduler, epochs)
     use_grad_scaler = use_amp and device.type == "cuda" and amp_dtype == torch.float16
     scaler = torch.amp.GradScaler("cuda", enabled=use_grad_scaler)
-    loss_fn = nn.L1Loss(reduction="none")
+    train_loss_fn = build_train_loss(train_cfg, device)
+    val_loss_fn = train_loss_fn.l1_fn
 
     if args.resume:
         checkpoint_dir = ckpt_path.parent
@@ -237,6 +250,16 @@ def main():
         train_yaml=config_paths.get("train_yaml"),
         metric_scope=metric_scope,
     ))
+    print(
+        f"loss: name={train_loss_fn.name} "
+        f"weights(l1={train_loss_fn.w_l1}, perceptual={train_loss_fn.w_perceptual}, tv={train_loss_fn.w_tv})"
+    )
+    print(
+        f"early-stop monitor=val_loss(masked_l1) "
+        f"patience={patience} eval_checks "
+        f"min_epochs={min_epochs} min_delta={min_delta} "
+        f"(eval_every_epochs={eval_every_epochs})"
+    )
 
     mean_list = list(dataset_cfg.norm.mean)
     std_list = list(dataset_cfg.norm.std)
@@ -245,6 +268,7 @@ def main():
 
     step = 0
     start_epoch = 1
+    last_epoch_trained = 0
     best_val_loss = float("inf")
     patience_counter = 0
     ckpt_path = Path(args.resume_ckpt) if args.resume_ckpt is not None else checkpoint_dir / "last.pt"
@@ -270,11 +294,13 @@ def main():
     val_loss = None
 
     for epoch in range(start_epoch, epochs + 1):
-        train_out = train_one_epoch(model=model, dl_train=dl_train, optimizer=optimizer, scaler=scaler, device=device, loss_fn=loss_fn, use_amp=use_amp, amp_dtype=amp_dtype, grad_accum_steps=grad_accum_steps, log_every=log_every, vis_every=vis_every, epoch=epoch, global_step=step, logger=logger, mean=mean, std=std)
+        train_out = train_one_epoch(model=model, dl_train=dl_train, optimizer=optimizer, scaler=scaler, device=device, train_loss_fn=train_loss_fn, use_amp=use_amp, amp_dtype=amp_dtype, grad_accum_steps=grad_accum_steps, log_every=log_every, vis_every=vis_every, epoch=epoch, global_step=step, logger=logger, mean=mean, std=std)
         step = int(train_out["global_step"])
+        last_epoch_trained = epoch
         train_loss = float(train_out["train_loss"])
+        train_terms = train_out.get("loss_terms", {})
         lr_now = optimizer.param_groups[0]["lr"]
-        logger.log(epoch=epoch, step=step, split="train_epoch", loss=train_loss, lr=lr_now)
+        logger.log(epoch=epoch, step=step, split="train_epoch", loss=train_loss, lr=lr_now, terms=train_terms)
         print(f"epoch={epoch} train_loss={train_loss:.6f}")
 
         if eval_every_epochs > 0 and epoch % eval_every_epochs == 0:
@@ -283,7 +309,7 @@ def main():
                 model=model,
                 dl=dl_val,
                 device=device,
-                loss_fn=loss_fn,
+                loss_fn=val_loss_fn,
                 use_amp=use_amp,
                 amp_dtype=amp_dtype,
                 epoch=epoch,
@@ -299,7 +325,8 @@ def main():
             logger.log(epoch=epoch, step=step, split="val", loss=val_loss, lr=lr_now)
             print(f"epoch={epoch} val_loss={val_loss:.6f}")
 
-            if val_loss < best_val_loss:
+            improved = val_loss < (best_val_loss - min_delta)
+            if improved:
                 best_val_loss = val_loss
                 patience_counter = 0
                 if save_best:
@@ -307,10 +334,15 @@ def main():
                     best_path = save_best_checkpoint(checkpoint_dir, best_ckpt)
                     print(f"saved best checkpoint: {best_path}")
             else:
-                patience_counter += 1
-                if patience > 0 and patience_counter >= patience:
-                    print(f"early stopping: no improvement for {patience} epochs (best val_loss={best_val_loss:.6f})")
-                    break
+                if epoch >= min_epochs:
+                    patience_counter += 1
+                    if patience > 0 and patience_counter >= patience:
+                        print(
+                            f"early stopping: no improvement larger than min_delta={min_delta} "
+                            f"for {patience} eval checks after min_epochs={min_epochs} "
+                            f"(best val_loss={best_val_loss:.6f})"
+                        )
+                        break
 
         if scheduler is not None:
             scheduler.step()
@@ -320,9 +352,10 @@ def main():
             last_path = save_last_checkpoint(checkpoint_dir, last_ckpt)
             print(f"saved last checkpoint: {last_path}")
 
-    final_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, loader_cfg=loader_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, config_paths=config_paths, epoch=epochs, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
+    final_epoch = int(last_epoch_trained if last_epoch_trained > 0 else max(start_epoch - 1, 0))
+    final_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, loader_cfg=loader_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, config_paths=config_paths, epoch=final_epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
     final_path = save_last_checkpoint(checkpoint_dir, final_ckpt)
-    print(f"done. saved: {final_path}")
+    print(f"done. saved: {final_path} (epoch={final_epoch})")
 
 
 if __name__ == "__main__":

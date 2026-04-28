@@ -1,19 +1,18 @@
-# Degradation-curve evaluation for ImageNet datasets.
+# Degradation protocol v1 (benchmark-locked).
+#
+# This file defines the first versioned degradation benchmark protocol.
+# Keep this file immutable for fair comparisons across runs.
 #
 # Block and multi-block severity is controlled by mask area ratio (%).
 # Freeform severity is controlled by num_strokes via mask_overrides.
 #
-# Both sections are combined automatically by get_eval_grid.
-# Dataset is NOT hardcoded — pass it via --dataset_yaml so the same config
-# works for imagenet, imagenet-simple, or imagenet-complex.
-#
 # Usage:
 #   python eval.py \
-#     --eval imagenet-degradation \
+#     --eval degradation_v1 \
 #     --ckpt runs/<train_run>/checkpoints/best.pt
 #
 #   python tools/plot_degradation.py \
-#     --results runs/<train_run>/eval/imagenet-degradation/val/epoch_<n>/eval_results.json
+#     --results runs/<train_run>/eval/degradation_v1/val/epoch_<n>/eval_results.json
 
 # ── Freeform: 6 stroke levels via mask_overrides ──────────────────────────
 conditions:
@@ -24,7 +23,7 @@ conditions:
   - {name: freeform_n14, mask_yaml: configs/mask/freeform.yaml, mask_overrides: {num_strokes: 14}}
   - {name: freeform_n20, mask_yaml: configs/mask/freeform.yaml, mask_overrides: {num_strokes: 20}}
 
-# ── Block + Multi-block: 6 area ratios via grid ───────────────────────────
+# ── Block + Multi-block: area ratios via grid ─────────────────────────────
 grid:
   mask_yaml:
     - configs/mask/block.yaml
