@@ -101,6 +101,10 @@ Loss configuration (in train config, not CLI):
 - `ckpt.min_epochs`: warmup period before early stopping is allowed
 - `ckpt.min_delta`: minimum val-loss improvement required to reset patience
 - Early stopping monitors `val_loss` (masked L1) for stable cross-run comparison.
+- `max_steps`: optional hard stop by global training step (`null`/missing keeps epoch-based stop)
+- `eval_every_steps`: optional eval cadence by steps (`0` disables; can be used together with epoch cadence)
+- `val_vis_every_steps`: optional val-visualization cadence when using step-based eval
+- `ckpt.save_last_every_steps`: optional `last.pt` save cadence by steps
 
 Outputs:
 
@@ -108,6 +112,25 @@ Outputs:
 - `runs/<auto_run_name>/metrics.csv`
 - `runs/<auto_run_name>/run_meta.json`
 - `runs/<auto_run_name>/resolved_config.yaml`
+
+Step-based budget example (fair cross-dataset training):
+
+```bash
+python train.py --dataset dtd --mask mixed --model unet --train benchmark_v1
+```
+
+Set in `configs/train/benchmark_v1.yaml` (or another train profile):
+
+```yaml
+max_steps: 40000
+eval_every_epochs: 0
+eval_every_steps: 2000
+val_vis_every_epochs: 0
+val_vis_every_steps: 10000
+ckpt:
+  save_last_every_epochs: 0
+  save_last_every_steps: 2000
+```
 
 ## Evaluation
 

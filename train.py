@@ -177,13 +177,29 @@ def main():
     apply_overrides(args, dataset_cfg, loader_cfg)
 
     epochs = int(train_cfg.epochs)
+    max_steps_cfg = getattr(train_cfg, "max_steps", None)
+    max_steps = int(max_steps_cfg) if max_steps_cfg is not None else None
+    if max_steps is not None and max_steps <= 0:
+        raise ValueError("train.max_steps must be > 0 when provided.")
     grad_accum_steps = int(train_cfg.grad_accum_steps)
     use_amp = bool(train_cfg.mixed_precision)
     log_every = int(train_cfg.log_every_steps)
     vis_every = int(train_cfg.vis_every_steps)
     eval_every_epochs = int(train_cfg.eval_every_epochs)
+    eval_every_steps_cfg = getattr(train_cfg, "eval_every_steps", None)
+    eval_every_steps = int(eval_every_steps_cfg) if eval_every_steps_cfg is not None else 0
+    if eval_every_steps < 0:
+        raise ValueError("train.eval_every_steps must be >= 0.")
     val_vis_every_epochs = int(train_cfg.val_vis_every_epochs)
+    val_vis_every_steps_cfg = getattr(train_cfg, "val_vis_every_steps", None)
+    val_vis_every_steps = int(val_vis_every_steps_cfg) if val_vis_every_steps_cfg is not None else 0
+    if val_vis_every_steps < 0:
+        raise ValueError("train.val_vis_every_steps must be >= 0.")
     save_last_every_epochs = int(train_cfg.ckpt.save_last_every_epochs)
+    save_last_every_steps_cfg = getattr(train_cfg.ckpt, "save_last_every_steps", None)
+    save_last_every_steps = int(save_last_every_steps_cfg) if save_last_every_steps_cfg is not None else 0
+    if save_last_every_steps < 0:
+        raise ValueError("train.ckpt.save_last_every_steps must be >= 0.")
     save_best = bool(train_cfg.ckpt.save_best)
     patience = int(train_cfg.ckpt.patience)
     min_epochs = int(train_cfg.ckpt.min_epochs)
@@ -258,8 +274,10 @@ def main():
         f"early-stop monitor=val_loss(masked_l1) "
         f"patience={patience} eval_checks "
         f"min_epochs={min_epochs} min_delta={min_delta} "
-        f"(eval_every_epochs={eval_every_epochs})"
+        f"(eval_every_epochs={eval_every_epochs}, eval_every_steps={eval_every_steps})"
     )
+    if max_steps is not None:
+        print(f"step-based stop enabled: max_steps={max_steps}")
 
     mean_list = list(dataset_cfg.norm.mean)
     std_list = list(dataset_cfg.norm.std)
@@ -294,7 +312,8 @@ def main():
     val_loss = None
 
     for epoch in range(start_epoch, epochs + 1):
-        train_out = train_one_epoch(model=model, dl_train=dl_train, optimizer=optimizer, scaler=scaler, device=device, train_loss_fn=train_loss_fn, use_amp=use_amp, amp_dtype=amp_dtype, grad_accum_steps=grad_accum_steps, log_every=log_every, vis_every=vis_every, epoch=epoch, global_step=step, logger=logger, mean=mean, std=std)
+        step_before_epoch = step
+        train_out = train_one_epoch(model=model, dl_train=dl_train, optimizer=optimizer, scaler=scaler, device=device, train_loss_fn=train_loss_fn, use_amp=use_amp, amp_dtype=amp_dtype, grad_accum_steps=grad_accum_steps, log_every=log_every, vis_every=vis_every, epoch=epoch, global_step=step, logger=logger, mean=mean, std=std, max_steps=max_steps)
         step = int(train_out["global_step"])
         last_epoch_trained = epoch
         train_loss = float(train_out["train_loss"])
@@ -303,8 +322,21 @@ def main():
         logger.log(epoch=epoch, step=step, split="train_epoch", loss=train_loss, lr=lr_now, terms=train_terms)
         print(f"epoch={epoch} train_loss={train_loss:.6f}")
 
-        if eval_every_epochs > 0 and epoch % eval_every_epochs == 0:
-            save_val_vis = val_vis_every_epochs > 0 and epoch % val_vis_every_epochs == 0
+        if int(train_out.get("num_steps", 0)) == 0 and max_steps is not None:
+            print(f"reached max_steps={max_steps}; stopping training.")
+            break
+
+        eval_due_epoch = eval_every_epochs > 0 and epoch % eval_every_epochs == 0
+        eval_due_steps = (
+            eval_every_steps > 0
+            and step > step_before_epoch
+            and (step // eval_every_steps) > (step_before_epoch // eval_every_steps)
+        )
+        if eval_due_epoch or eval_due_steps:
+            if eval_due_steps and val_vis_every_steps > 0:
+                save_val_vis = step % val_vis_every_steps == 0
+            else:
+                save_val_vis = val_vis_every_epochs > 0 and epoch % val_vis_every_epochs == 0
             val_out = evaluate(
                 model=model,
                 dl=dl_val,
@@ -347,10 +379,20 @@ def main():
         if scheduler is not None:
             scheduler.step()
 
-        if save_last_every_epochs > 0 and epoch % save_last_every_epochs == 0:
+        save_last_due_epoch = save_last_every_epochs > 0 and epoch % save_last_every_epochs == 0
+        save_last_due_steps = (
+            save_last_every_steps > 0
+            and step > step_before_epoch
+            and (step // save_last_every_steps) > (step_before_epoch // save_last_every_steps)
+        )
+        if save_last_due_epoch or save_last_due_steps:
             last_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, loader_cfg=loader_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, config_paths=config_paths, epoch=epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)
             last_path = save_last_checkpoint(checkpoint_dir, last_ckpt)
             print(f"saved last checkpoint: {last_path}")
+
+        if bool(train_out.get("reached_max_steps", False)):
+            print(f"reached max_steps={max_steps}; stopping training.")
+            break
 
     final_epoch = int(last_epoch_trained if last_epoch_trained > 0 else max(start_epoch - 1, 0))
     final_ckpt = make_checkpoint_dict(model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, model_cfg=model_cfg, dataset_cfg=dataset_cfg, loader_cfg=loader_cfg, mask_cfg=mask_cfg, train_cfg=train_cfg, config_paths=config_paths, epoch=final_epoch, step=step, seed=args.seed, best_val_loss=best_val_loss, last_val_loss=val_loss)

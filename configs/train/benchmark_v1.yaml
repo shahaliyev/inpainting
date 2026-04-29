@@ -1,4 +1,5 @@
-epochs: 100
+epochs: 300
+max_steps: 80000
 
 optimizer:
   name: adamw
@@ -17,7 +18,7 @@ amp_dtype: bfloat16
 tf32: true
 
 compile:
-  enabled: true
+  enabled: false
   mode: default
   fullgraph: false
   dynamic: false
@@ -30,8 +31,10 @@ threads:
 
 log_every_steps: 100
 vis_every_steps: 1000
-eval_every_epochs: 1
-val_vis_every_epochs: 1
+eval_every_epochs: 0
+eval_every_steps: 2000
+val_vis_every_epochs: 0
+val_vis_every_steps: 10000
 
 metrics:
   scope: mask
@@ -48,11 +51,12 @@ loss:
     net: vgg
 
 ckpt:
-  save_last_every_epochs: 1
+  save_last_every_epochs: 0
+  save_last_every_steps: 2000
   save_best: true
   # Stop training after this many eval checks with no val loss improvement.
   # 0 disables early stopping.
-  patience: 25
+  patience: 15
   # Do not consider early stopping before this epoch.
   min_epochs: 70
   # Minimum required val_loss improvement to reset patience.

@@ -4,7 +4,7 @@ import torch
 from utils.metrics import compute_metrics
 
 
-def train_one_epoch(model, dl_train, optimizer, scaler, device, train_loss_fn, use_amp, amp_dtype, grad_accum_steps, log_every, vis_every, epoch, global_step, logger, mean, std):
+def train_one_epoch(model, dl_train, optimizer, scaler, device, train_loss_fn, use_amp, amp_dtype, grad_accum_steps, log_every, vis_every, epoch, global_step, logger, mean, std, max_steps=None):
     model.train()
     running_loss = 0.0
     step_count = 0
@@ -13,6 +13,8 @@ def train_one_epoch(model, dl_train, optimizer, scaler, device, train_loss_fn, u
     running_term_sums = {}
 
     for batch_idx, batch in enumerate(dl_train, start=1):
+        if max_steps is not None and global_step >= int(max_steps):
+            break
         img = batch["image"].to(device, non_blocking=True)
         mask = batch["mask"].to(device, non_blocking=True)
         masked = batch["masked_image"].to(device, non_blocking=True)
@@ -64,6 +66,7 @@ def train_one_epoch(model, dl_train, optimizer, scaler, device, train_loss_fn, u
         "loss_terms": avg_terms,
         "num_steps": step_count,
         "global_step": global_step,
+        "reached_max_steps": bool(max_steps is not None and global_step >= int(max_steps)),
     }
 
 
