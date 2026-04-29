@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 from omegaconf import OmegaConf
+from tqdm.auto import tqdm
 
 from data.build import build_dataloader
 from models.build import build_model
@@ -29,7 +30,6 @@ def parse_args():
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--batch_size", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--resume", action="store_true")
     ap.add_argument("--resume_ckpt", default=None)
     ap.add_argument("--strict_config_match", action="store_true",
                     help="Fail instead of warn when resume CLI keys mismatch checkpoint metadata.")
@@ -117,9 +117,8 @@ def build_dataloaders(args, dataset_cfg, loader_cfg, mask_cfg):
 
 def main():
     args = parse_args()
-    if args.resume:
-        if args.resume_ckpt is None:
-            raise ValueError("--resume requires --resume_ckpt pointing to an existing checkpoint.")
+    is_resume = args.resume_ckpt is not None
+    if is_resume:
         ckpt_path = Path(args.resume_ckpt)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"--resume_ckpt not found: {ckpt_path}")
@@ -130,7 +129,7 @@ def main():
             raise ValueError("Fresh training requires --dataset, --mask, and --model config keys.")
         ckpt_path = None
 
-    if args.resume:
+    if is_resume:
         ckpt_raw = torch.load(Path(args.resume_ckpt), map_location="cpu")
         validate_checkpoint_schema(ckpt_raw)
         config_paths = dict(ckpt_raw.get("config_paths", {}) or {})
@@ -225,7 +224,7 @@ def main():
     train_loss_fn = build_train_loss(train_cfg, device)
     val_loss_fn = train_loss_fn.l1_fn
 
-    if args.resume:
+    if is_resume:
         checkpoint_dir = ckpt_path.parent
         run_dir = checkpoint_dir.parent
         run_name = run_dir.name
@@ -248,7 +247,7 @@ def main():
         "model_cfg": OmegaConf.to_container(model_cfg, resolve=True),
         "train_cfg": OmegaConf.to_container(train_cfg, resolve=True),
     }
-    if not args.resume:
+    if not is_resume:
         save_run_metadata(
             run_dir,
             run_name=run_name,
@@ -291,7 +290,7 @@ def main():
     patience_counter = 0
     ckpt_path = Path(args.resume_ckpt) if args.resume_ckpt is not None else checkpoint_dir / "last.pt"
 
-    if args.resume:
+    if is_resume:
         state = load_checkpoint(path=ckpt_path, model=model_base, optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_grad_scaler else None, device=device)
         start_epoch = int(state["epoch"]) + 1
         step = int(state["step"])
@@ -311,7 +310,8 @@ def main():
 
     val_loss = None
 
-    for epoch in range(start_epoch, epochs + 1):
+    epoch_iter = tqdm(range(start_epoch, epochs + 1), desc="train", unit="epoch")
+    for epoch in epoch_iter:
         step_before_epoch = step
         train_out = train_one_epoch(model=model, dl_train=dl_train, optimizer=optimizer, scaler=scaler, device=device, train_loss_fn=train_loss_fn, use_amp=use_amp, amp_dtype=amp_dtype, grad_accum_steps=grad_accum_steps, log_every=log_every, vis_every=vis_every, epoch=epoch, global_step=step, logger=logger, mean=mean, std=std, max_steps=max_steps)
         step = int(train_out["global_step"])
@@ -321,6 +321,12 @@ def main():
         lr_now = optimizer.param_groups[0]["lr"]
         logger.log(epoch=epoch, step=step, split="train_epoch", loss=train_loss, lr=lr_now, terms=train_terms)
         print(f"epoch={epoch} train_loss={train_loss:.6f}")
+        epoch_iter.set_postfix({
+            "epoch": epoch,
+            "step": step,
+            "train_loss": f"{train_loss:.4f}",
+            "patience": f"{patience_counter}/{patience}" if patience > 0 else "off",
+        })
 
         if int(train_out.get("num_steps", 0)) == 0 and max_steps is not None:
             print(f"reached max_steps={max_steps}; stopping training.")
@@ -356,6 +362,13 @@ def main():
             val_loss = float(val_out["val_loss"])
             logger.log(epoch=epoch, step=step, split="val", loss=val_loss, lr=lr_now)
             print(f"epoch={epoch} val_loss={val_loss:.6f}")
+            epoch_iter.set_postfix({
+                "epoch": epoch,
+                "step": step,
+                "train_loss": f"{train_loss:.4f}",
+                "val_loss": f"{val_loss:.4f}",
+                "patience": f"{patience_counter}/{patience}" if patience > 0 else "off",
+            })
 
             improved = val_loss < (best_val_loss - min_delta)
             if improved:

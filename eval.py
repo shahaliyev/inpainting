@@ -58,6 +58,57 @@ def infer_eval_dir_from_ckpt(ckpt_path: Path, eval_profile: str, split: str, epo
     return train_run_dir / "eval" / eval_profile / split / f"epoch_{int(epoch)}"
 
 
+def build_default_grid_from_training_mask(dataset_cfg_base, mask_cfg_base, dataset_path, mask_path):
+    mask_name = str(getattr(mask_cfg_base, "name", "unknown")).lower()
+    if mask_name != "mixed":
+        return [{
+            "name": mask_name if mask_name else "default",
+            "dataset_cfg": dataset_cfg_base,
+            "mask_cfg": mask_cfg_base,
+            "mask_ratios": None,
+            "mask_overrides": None,
+            "dataset_yaml": dataset_path,
+            "mask_yaml": mask_path,
+        }]
+
+    if not dataset_path:
+        # Fallback for older checkpoints lacking config_paths metadata.
+        return [{
+            "name": "mixed",
+            "dataset_cfg": dataset_cfg_base,
+            "mask_cfg": mask_cfg_base,
+            "mask_ratios": None,
+            "mask_overrides": None,
+            "dataset_yaml": None,
+            "mask_yaml": None,
+        }]
+
+    # For mixed-trained models, evaluate each constituent family separately by default.
+    return [
+        {
+            "name": "block",
+            "dataset_yaml": dataset_path,
+            "mask_yaml": resolve_config_path("mask", "block"),
+            "mask_ratios": None,
+            "mask_overrides": None,
+        },
+        {
+            "name": "multi_block",
+            "dataset_yaml": dataset_path,
+            "mask_yaml": resolve_config_path("mask", "multi_block"),
+            "mask_ratios": None,
+            "mask_overrides": None,
+        },
+        {
+            "name": "freeform",
+            "dataset_yaml": dataset_path,
+            "mask_yaml": resolve_config_path("mask", "freeform"),
+            "mask_ratios": None,
+            "mask_overrides": None,
+        },
+    ]
+
+
 def main():
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -139,15 +190,12 @@ def main():
                         f"differs from checkpoint mask '{default_mask_yaml}'."
                     )
     else:
-        grid = [{
-            "name": "default",
-            "dataset_cfg": dataset_cfg_base,
-            "mask_cfg": mask_cfg_base,
-            "mask_ratios": None,
-            "mask_overrides": None,
-            "dataset_yaml": None,
-            "mask_yaml": None,
-        }]
+        grid = build_default_grid_from_training_mask(
+            dataset_cfg_base=dataset_cfg_base,
+            mask_cfg_base=mask_cfg_base,
+            dataset_path=dataset_path,
+            mask_path=mask_path,
+        )
 
     results = []
     print(f"checkpoint={args.ckpt}  epoch={state_epoch} step={state_step}  split={args.split}")

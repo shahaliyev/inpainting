@@ -81,7 +81,7 @@ python train.py --dataset carpet --mask mixed --model unet --train benchmark_v1
 Resume:
 
 ```bash
-python train.py --resume --resume_ckpt runs/<train_run>/checkpoints/last.pt
+python train.py --resume_ckpt runs/<train_run>/checkpoints/last.pt
 ```
 
 `--strict_config_match` makes resume fail on dataset/mask/model key mismatches.
@@ -122,7 +122,7 @@ python train.py --dataset dtd --mask mixed --model unet --train benchmark_v1
 Set in `configs/train/benchmark_v1.yaml` (or another train profile):
 
 ```yaml
-max_steps: 40000
+max_steps: 80000
 eval_every_epochs: 0
 eval_every_steps: 2000
 val_vis_every_epochs: 0
@@ -139,6 +139,11 @@ Basic eval:
 ```bash
 python eval.py --ckpt runs/<train_run>/checkpoints/best.pt
 ```
+
+Default eval mask behavior (when `--eval` / `--eval_yaml` is not provided):
+
+- If training mask is `block`, `multi_block`, or `freeform`, eval uses that same mask only.
+- If training mask is `mixed`, eval automatically runs three conditions: `block`, `multi_block`, and `freeform`.
 
 Eval profile:
 
@@ -172,6 +177,14 @@ Default eval output:
 ```bash
 python tools/plot_degradation.py --results runs/<train_run>/eval/degradation_v1/val/epoch_<n>/eval_results.json
 python tools/plot_degradation.py --results runs/<run_a>/eval/degradation_v1/val/epoch_<n>/eval_results.json runs/<run_b>/eval/degradation_v1/val/epoch_<n>/eval_results.json --labels "modelA-datasetX" "modelB-datasetY" --out_dir figures/degradation_compare
+```
+
+## Plot Train/Val Curves
+
+```bash
+python tools/plot_train_val.py --metrics runs/<train_run>/metrics.csv
+python tools/plot_train_val.py --metrics runs/<train_run>/metrics.csv --x epoch
+python tools/plot_train_val.py --metrics runs/<train_run>/metrics.csv --show_train_running
 ```
 
 ## Benchmark Protocol (v1)
