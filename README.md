@@ -172,6 +172,29 @@ Default eval output:
 
 `runs/<train_run>/eval/<eval_profile>/<split>/epoch_<n>/eval_results.json`
 
+## Validation App
+
+Interactive single-image, multi-mask visualisation and analysis tool.
+
+```bash
+python -m streamlit run tools/app.py
+```
+
+Always launch with `python -m streamlit` (not `streamlit run`) to ensure the active virtual environment is used for imports and optional packages like `lpips`.
+
+**Features**
+
+- Choose dataset, split, model, and mask type from the sidebar.
+- Checkpoint is resolved automatically from `runs/` for the selected dataset + model pair.
+- For `block` / `multi_block` masks enter comma-separated side-ratios (% of min image side); the pixel equivalent is kept in sync automatically. Each ratio is applied exactly once, in order.
+- For `freeform` masks set the number of strokes and variants via sliders.
+- Metrics (L1, PSNR, SSIM, optionally LPIPS) computed on masked or full area.
+- Per-variant display: masked input · inpainting result · difference heatmap, plus a collapsible crop zoomed to the masked region.
+- Analysis tab: metric-vs-ratio line chart with degradation slope overlay, per-variant bar chart; both charts show ↑/↓ better indicators.
+- Download a self-contained HTML report (all images and charts embedded as base64).
+
+**Committing `.streamlit/config.toml`**: this file sets the light theme and `headless = true`; commit it so all contributors see a consistent UI without extra configuration.
+
 ## Plot Degradation Curves
 
 ```bash
