@@ -8,3 +8,6 @@ scikit-image>=0.26,<0.27
 lpips>=0.1.4,<0.2
 matplotlib>=3.10,<3.11
 tqdm>=4.67,<5
+pandas>=2.2,<4
+scipy>=1.14,<2
+statsmodels>=0.14,<0.15
