@@ -29,8 +29,6 @@ runs/
 experiments/
 logs/
 outputs/
-analysis_out/
-analysis/
 figures/
 
 # Model checkpoints
