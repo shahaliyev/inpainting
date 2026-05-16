@@ -599,15 +599,7 @@ def plot_probe_curves(
     metric_label = _metric_label(metric)
     probe_label = PROBE_STYLE.get(probe, {}).get("display", probe)
 
-    probe_keys = ["probe", "domain", "geometry", "metric", "severity", "severity_kind"]
-
-    # Collapse repeated observations before plotting the probe-level curve.
-    sub_tidy = (
-        tidy[(tidy["metric"] == metric) & (tidy["probe"] == probe)]
-        .groupby(probe_keys, sort=False)["q_oriented"]
-        .mean()
-        .reset_index(name="q_oriented")
-    )
+    sub_tidy = tidy[(tidy["metric"] == metric) & (tidy["probe"] == probe)].copy()
 
     for row, domain in enumerate(domains):
         _plot_ratio_freeform_panels(
@@ -619,12 +611,14 @@ def plot_probe_curves(
             metric_label=metric_label,
             row=row,
             n_rows=n_rows,
+            value_col="q_oriented",
+            ylabel_suffix=r"($\tilde{q}_m$, ↑ better)",
             per_panel_legend=True,
             geometry_colors=True,
         )
 
     fig.suptitle(
-        f"Probe degradation  $\\hat{{q}}_m(p,d,g,s)$ / $\\tilde{{q}}_m$ oriented  —  {probe_label}  |  {metric_label}",
+        f"Probe degradation  $\\tilde{{q}}_m(p,d,g,s)$  —  {probe_label}  |  {metric_label}",
         fontsize=12,
     )
 
@@ -703,7 +697,7 @@ def save_manifest(out_dir: Path, args, tidy: pd.DataFrame, n_figures: int) -> No
             "Probe models are evaluated under the same cross-geometry protocol.",
             "Cross-probe dispersion is reported in paper_dispersion.csv and paper_dispersion_summary.csv.",
             "V_hat is exported in paper_curves_long.csv and paper_dispersion.csv.",
-            "Per-probe figures show oriented probe-level degradation curves.",
+            "Per-probe figures plot tilde q_m(p,d,g,s) (metrics oriented so larger is better).",
             "LPIPS and L1 are negated so that larger oriented values indicate better reconstruction.",
         ],
     }
