@@ -5,30 +5,34 @@ Aggregates probe models into Q_hat / V_hat, orients metrics (higher = better),
 and exports normalized robustness R_m heatmaps plus CSV tables.
 
 Usage:
-  python tools/plot_degradation_paper.py --runs_root runs --out_dir figures/paper
+  python tools/plot_degradation_paper.py --out_dir figures/paper
 
-  python tools/plot_degradation_paper.py \\
-    --results runs/a/.../eval_results.json runs/b/.../eval_results.json \\
-    --out_dir figures/paper
+  python tools/plot_degradation_paper.py --runs_root runs --protocol degradation_v1
 """
 
 from __future__ import annotations
 
 import argparse
+import glob
 import json
-import sys
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 
-from analysis.eval_stats import HIGHER_IS_BETTER, METRICS, load_all_evals, load_eval_file
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RUNS_ROOT = REPO_ROOT / "runs"
+
+METRICS: tuple[str, ...] = ("psnr", "ssim", "lpips", "l1")
+HIGHER_IS_BETTER: dict[str, bool] = {
+    "psnr": True,
+    "ssim": True,
+    "lpips": False,
+    "l1": False,
+}
+SCOPES: tuple[str, ...] = ("mask", "full")
 
 MASK_STYLE = {
     "block": {"linestyle": "-", "marker": "o", "display": "Block", "color": "#1f77b4"},
@@ -54,12 +58,10 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     ap.add_argument(
-        "--results",
-        nargs="*",
-        default=None,
-        help="Optional explicit eval_results.json paths (skips auto-discovery)",
+        "--runs_root",
+        default=str(DEFAULT_RUNS_ROOT),
+        help="Directory containing training runs (eval JSONs under */eval/...)",
     )
-    ap.add_argument("--runs_root", default="runs", help="Root for auto-discovery")
     ap.add_argument("--protocol", default="degradation_v1")
     ap.add_argument("--split", default="val")
     ap.add_argument("--epoch", default="*", help="Epoch glob segment for discovery")
@@ -76,21 +78,94 @@ def orient_value(metric: str, value: float) -> float:
     return float(-value)
 
 
+def _parse_condition(cond: dict) -> dict:
+    """Pull eval_mask + intensity out of a single condition entry."""
+    mask_yaml = cond.get("mask_yaml", "") or ""
+    eval_mask = Path(mask_yaml).stem or "unknown"
+    mask_ratios = cond.get("mask_ratios") or []
+    mask_overrides = cond.get("mask_overrides") or {}
+
+    if eval_mask in ("block", "multi_block") and mask_ratios:
+        return {
+            "eval_mask": eval_mask,
+            "intensity": float(mask_ratios[0]),
+            "intensity_kind": "ratio",
+        }
+    if eval_mask == "freeform" and mask_overrides.get("num_strokes") is not None:
+        return {
+            "eval_mask": eval_mask,
+            "intensity": float(mask_overrides["num_strokes"]),
+            "intensity_kind": "strokes",
+        }
+    return {"eval_mask": eval_mask, "intensity": float("nan"), "intensity_kind": "unknown"}
+
+
+def load_eval_file(path: str | Path) -> list[dict]:
+    """Read one eval_results.json under runs/ into long-format rows."""
+    path = Path(path).resolve()
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    base = {
+        "model": data.get("model", "unknown"),
+        "dataset": data.get("dataset", "unknown"),
+        "train_mask": data.get("mask", "unknown"),
+        "epoch": data.get("epoch"),
+        "checkpoint": data.get("checkpoint_name"),
+        "source": str(path),
+    }
+    rows: list[dict] = []
+    for cond in data.get("conditions", []):
+        parsed = _parse_condition(cond)
+        metrics = cond.get("metrics", {}) or {}
+        for metric in METRICS:
+            for scope in SCOPES:
+                key = f"{metric}_{scope}"
+                value = metrics.get(key)
+                if value is None and scope == "mask":
+                    value = metrics.get(metric)
+                if value is None:
+                    continue
+                rows.append({
+                    **base,
+                    "condition": cond.get("condition"),
+                    "eval_mask": parsed["eval_mask"],
+                    "intensity": parsed["intensity"],
+                    "intensity_kind": parsed["intensity_kind"],
+                    "metric": metric,
+                    "scope": scope,
+                    "value": float(value),
+                    "higher_is_better": HIGHER_IS_BETTER[metric],
+                })
+    return rows
+
+
+def load_all_evals(
+    runs_root: str | Path,
+    protocol: str = "degradation_v1",
+    split: str = "val",
+    epoch: str = "*",
+) -> pd.DataFrame:
+    """Glob eval_results.json under runs_root and return a tidy DataFrame."""
+    runs_root = Path(runs_root).resolve()
+    pattern = str(
+        runs_root / "*" / "eval" / protocol / split / f"epoch_{epoch}" / "eval_results.json"
+    )
+    paths = sorted(glob.glob(pattern))
+    rows: list[dict] = []
+    for p in paths:
+        rows.extend(load_eval_file(p))
+    return pd.DataFrame(rows)
+
+
 def load_tidy(
-    results: list[str] | None,
     runs_root: str,
     protocol: str,
     split: str,
     epoch: str,
     scope: str,
 ) -> pd.DataFrame:
-    if results:
-        rows: list[dict] = []
-        for p in results:
-            rows.extend(load_eval_file(p))
-        df = pd.DataFrame(rows)
-    else:
-        df = load_all_evals(runs_root=runs_root, protocol=protocol, split=split, epoch=epoch)
+    df = load_all_evals(runs_root=runs_root, protocol=protocol, split=split, epoch=epoch)
     if df.empty:
         return df
     df = df[df["scope"] == scope].copy()
@@ -524,15 +599,7 @@ def plot_probe_curves(
     metric_label = _metric_label(metric)
     probe_label = PROBE_STYLE.get(probe, {}).get("display", probe)
 
-    probe_keys = ["probe", "domain", "geometry", "metric", "severity", "severity_kind"]
-
-    # Collapse repeated observations before plotting the probe-level curve.
-    sub_tidy = (
-        tidy[(tidy["metric"] == metric) & (tidy["probe"] == probe)]
-        .groupby(probe_keys, sort=False)["q_oriented"]
-        .mean()
-        .reset_index(name="q_oriented")
-    )
+    sub_tidy = tidy[(tidy["metric"] == metric) & (tidy["probe"] == probe)].copy()
 
     for row, domain in enumerate(domains):
         _plot_ratio_freeform_panels(
@@ -544,12 +611,14 @@ def plot_probe_curves(
             metric_label=metric_label,
             row=row,
             n_rows=n_rows,
+            value_col="q_oriented",
+            ylabel_suffix=r"($\tilde{q}_m$, ↑ better)",
             per_panel_legend=True,
             geometry_colors=True,
         )
 
     fig.suptitle(
-        f"Probe degradation  $\\hat{{q}}_m(p,d,g,s)$ / $\\tilde{{q}}_m$ oriented  —  {probe_label}  |  {metric_label}",
+        f"Probe degradation  $\\tilde{{q}}_m(p,d,g,s)$  —  {probe_label}  |  {metric_label}",
         fontsize=12,
     )
 
@@ -612,6 +681,7 @@ def plot_rm_heatmap(
 def save_manifest(out_dir: Path, args, tidy: pd.DataFrame, n_figures: int) -> None:
     manifest = {
         "script": "plot_degradation_paper.py",
+        "runs_root": str(Path(args.runs_root).resolve()),
         "protocol": args.protocol,
         "split": args.split,
         "scope": args.scope,
@@ -627,7 +697,7 @@ def save_manifest(out_dir: Path, args, tidy: pd.DataFrame, n_figures: int) -> No
             "Probe models are evaluated under the same cross-geometry protocol.",
             "Cross-probe dispersion is reported in paper_dispersion.csv and paper_dispersion_summary.csv.",
             "V_hat is exported in paper_curves_long.csv and paper_dispersion.csv.",
-            "Per-probe figures show oriented probe-level degradation curves.",
+            "Per-probe figures plot tilde q_m(p,d,g,s) (metrics oriented so larger is better).",
             "LPIPS and L1 are negated so that larger oriented values indicate better reconstruction.",
         ],
     }
@@ -643,7 +713,6 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     tidy = load_tidy(
-        args.results,
         args.runs_root,
         args.protocol,
         args.split,
@@ -652,7 +721,8 @@ def main():
     )
     if tidy.empty:
         raise SystemExit(
-            "No evaluation data found. Run degradation_v1 eval or pass --results paths."
+            f"No evaluation data under {Path(args.runs_root).resolve()!s}. "
+            f"Run eval.py (protocol={args.protocol!r}, split={args.split!r}) first."
         )
 
     print(
