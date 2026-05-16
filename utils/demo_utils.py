@@ -45,6 +45,13 @@ def denorm(
     return arr
 
 
+def apply_demo_mask(image_nhw: np.ndarray, mask_1hw: torch.Tensor) -> np.ndarray:
+    """Zero out masked pixels in denormalized RGB image (display only)."""
+    out = image_nhw.copy()
+    out[mask_1hw[0].detach().cpu().numpy() > 0.5] = 0.0
+    return out
+
+
 def show_grid(
     images: List[np.ndarray],
     nrows: int,
