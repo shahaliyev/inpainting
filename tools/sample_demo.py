@@ -34,6 +34,7 @@ from utils.config_resolver import resolve_config_path
 from utils.demo_utils import apply_demo_mask, denorm, get_norm_from_cfg
 
 DOMAIN_ORDER = ("carpet", "dtd", "imagenet-simple", "imagenet-complex")
+COMBINED_DOMAIN_ORDER = ("dtd", "carpet", "imagenet-simple", "imagenet-complex")
 
 DATASET_DISPLAY = {
     "carpet": "Carpet",
@@ -54,6 +55,8 @@ RATIO_TITLE_SIZE_DELTA = 0.5
 # This controls the red-arrow gaps. Because it is in inches, horizontal
 # and vertical gaps are actually comparable.
 INNER_IMAGE_PAD_INCH = 0.035
+COMBINED_INNER_GAP_PX = 4
+COMBINED_OUTER_PAD_PX = 8
 
 # Outer 2x2 dataset spacing. These control the green/caption gaps.
 COMBINED_OUTER_WSPACE = 0.01
@@ -122,6 +125,24 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--dataset-rows", type=int, default=2)
     ap.add_argument("--dataset-cols", type=int, default=2)
     ap.add_argument("--dpi", type=int, default=300)
+    ap.add_argument(
+        "--combined-inner-gap",
+        type=int,
+        default=COMBINED_INNER_GAP_PX,
+        help="Pixel gap between images inside one dataset panel for --combined.",
+    )
+    ap.add_argument(
+        "--combined-dataset-gap",
+        type=int,
+        default=15,
+        help="Pixel gap between dataset panels for --combined. Defaults to 2 * --combined-inner-gap.",
+    )
+    ap.add_argument(
+        "--combined-outer-pad",
+        type=int,
+        default=COMBINED_OUTER_PAD_PX,
+        help="White pixel padding around the whole --combined PNG.",
+    )
 
     ap.add_argument(
         "--figsize",
@@ -140,6 +161,9 @@ def resolve_datasets(args: argparse.Namespace) -> list[str]:
 
     if args.datasets:
         return [d.strip() for d in args.datasets.split(",") if d.strip()]
+
+    if args.combined:
+        return list(COMBINED_DOMAIN_ORDER)
 
     return list(DOMAIN_ORDER)
 
@@ -348,85 +372,54 @@ def build_combined_figure(
     dataset_cols: int,
     dpi: int,
     figsize: tuple[float, float] | None,
+    inner_gap: int = COMBINED_INNER_GAP_PX,
+    dataset_gap: int | None = None,
+    outer_pad: int = COMBINED_OUTER_PAD_PX,
 ) -> plt.Figure:
+    """Build the no-text combined demo figure using pixel-level composition."""
     n_cols = 1 + len(ratios)
     max_sample_rows = max(len(domain_rows[d]) for d in datasets)
 
-    panel_w = 1.05 * n_cols
-    panel_h = 1.35 * max_sample_rows
+    sample = next(
+        img for name in datasets for row in domain_rows[name] for img in row
+    )
+    tile_h, tile_w = sample.shape[:2]
+    panel_w = n_cols * tile_w + (n_cols - 1) * inner_gap
+    panel_h = max_sample_rows * tile_h + (max_sample_rows - 1) * inner_gap
+    dataset_gap = 2 * inner_gap if dataset_gap is None else dataset_gap
+
+    canvas_w = dataset_cols * panel_w + (dataset_cols - 1) * dataset_gap + 2 * outer_pad
+    canvas_h = dataset_rows * panel_h + (dataset_rows - 1) * dataset_gap + 2 * outer_pad
+    canvas = np.full((canvas_h, canvas_w, 3), 255, dtype=np.uint8)
+
+    for panel_idx, name in enumerate(datasets[: dataset_rows * dataset_cols]):
+        pr, pc = divmod(panel_idx, dataset_cols)
+        panel_y = outer_pad + pr * (panel_h + dataset_gap)
+        panel_x = outer_pad + pc * (panel_w + dataset_gap)
+
+        for sr, row in enumerate(domain_rows[name]):
+            for sc, img in enumerate(row):
+                tile = _as_uint8_rgb(img)
+                y = panel_y + sr * (tile_h + inner_gap)
+                x = panel_x + sc * (tile_w + inner_gap)
+                canvas[y:y + tile_h, x:x + tile_w] = tile
 
     if figsize is None:
-        figsize = (
-            panel_w * dataset_cols + 0.08,
-            panel_h * dataset_rows + 0.32,
-        )
+        figsize = (canvas_w / dpi, canvas_h / dpi)
 
     fig = plt.figure(figsize=figsize, dpi=dpi)
-
-    outer = fig.add_gridspec(
-        dataset_rows,
-        dataset_cols,
-        wspace=COMBINED_OUTER_WSPACE,
-        hspace=COMBINED_OUTER_HSPACE,
-        left=0.01,
-        right=0.995,
-        top=0.93,
-        bottom=0.07,
-    )
-
-    for panel_idx, name in enumerate(datasets):
-        if panel_idx >= dataset_rows * dataset_cols:
-            break
-
-        pr, pc = divmod(panel_idx, dataset_cols)
-        rows = domain_rows[name]
-        n_rows = len(rows)
-
-        temp_ax = fig.add_subplot(outer[pr, pc])
-        pos = temp_ax.get_position()
-        temp_ax.remove()
-
-        grid = ImageGrid(
-            fig,
-            rect=[pos.x0, pos.y0, pos.width, pos.height],
-            nrows_ncols=(n_rows, n_cols),
-            axes_pad=INNER_IMAGE_PAD_INCH,
-            share_all=False,
-            aspect=True,
-        )
-
-        caption = dataset_caption(panel_idx, name)
-        bottom_sc = n_cols // 2
-
-        for sr in range(n_rows):
-            for sc in range(n_cols):
-                ax = grid[sr * n_cols + sc]
-
-                if sc < len(rows[sr]):
-                    ax.imshow(rows[sr][sc])
-
-                ax.set_axis_off()
-
-                _style_severity_axis(
-                    ax,
-                    sc,
-                    ratios,
-                    show_title=(sr == 0 and pr == 0),
-                    title_fontsize=8,
-                )
-
-                if sr == n_rows - 1 and sc == bottom_sc:
-                    ax.text(
-                        0.5,
-                        -0.08,
-                        caption,
-                        transform=ax.transAxes,
-                        ha="center",
-                        va="top",
-                        fontsize=9,
-                    )
-
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.imshow(canvas)
+    ax.set_axis_off()
     return fig
+
+
+def _as_uint8_rgb(image: np.ndarray) -> np.ndarray:
+    """Convert a [0,1] float RGB image to uint8 without changing its content."""
+    arr = np.asarray(image)
+    if arr.dtype == np.uint8:
+        return arr
+    return np.clip(arr * 255.0, 0, 255).astype(np.uint8)
 
 
 def main() -> None:
@@ -539,6 +532,9 @@ def main() -> None:
             args.dataset_cols,
             args.dpi,
             figsize,
+            inner_gap=args.combined_inner_gap,
+            dataset_gap=args.combined_dataset_gap,
+            outer_pad=args.combined_outer_pad,
         )
 
         out_path = tagged_path(Path(args.out), args.seed, args.n_samples)
@@ -558,6 +554,9 @@ def main() -> None:
                 args.dataset_cols,
                 args.dpi,
                 figsize,
+                inner_gap=args.combined_inner_gap,
+                dataset_gap=args.combined_dataset_gap,
+                outer_pad=args.combined_outer_pad,
             )
 
             fig.savefig(pdf_path, bbox_inches="tight", pad_inches=0.01)
