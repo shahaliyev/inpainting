@@ -1,13 +1,13 @@
 """
-Plot degradation curves and robustness summaries (Section 3).
+Plot all degradation curves and robustness summaries at once (Section 3).
 
-Aggregates probe models into Q_hat / V_hat, orients metrics (higher = better),
+Aggregates probe models into Q_bar / V_bar, orients metrics (higher = better),
 and exports normalized robustness R_m summaries plus CSV tables.
 
 Usage:
-  python tools/plot_degradation_paper.py --out_dir figures/paper
+  python plots/plot_degradation_paper.py --out_dir figures/paper
 
-  python tools/plot_degradation_paper.py --runs_root runs --protocol degradation_v1
+  python plots/plot_degradation_paper.py --runs_root runs --protocol degradation_v1
 """
 
 from __future__ import annotations
@@ -32,8 +32,6 @@ from plots._utils import (  # noqa: E402
     DOMAIN_LABELS,
     DOMAIN_LINESTYLES,
     DOMAIN_ORDER,
-    FIG_SINGLE,
-    FIG_DOUBLE,
     FIG_2x2,
     METRIC_CANONICAL,
     METRICS as METRIC_SPECS,
@@ -54,26 +52,7 @@ HIGHER_IS_BETTER: dict[str, bool] = {
 
 SCOPES: tuple[str, ...] = ("mask", "full")
 
-MASK_STYLE = {
-    "block": {
-        "linestyle": "-",
-        "marker": MODEL_MARKERS["unet"],
-        "display": "Block",
-        "color": MODEL_COLORS["unet"],
-    },
-    "multi_block": {
-        "linestyle": "--",
-        "marker": MODEL_MARKERS["partial_conv"],
-        "display": "Multi-block",
-        "color": MODEL_COLORS["partial_conv"],
-    },
-}
-
-RATIO_GEOMETRIES = (
-    "block",
-    # "multi_block",
-)
-GEOMETRY_ORDER = RATIO_GEOMETRIES
+GEOMETRY_ORDER = ("block",)
 PROBE_ORDER = tuple(MODEL_ORDER)
 EXPECTED_N_PROBES = len(PROBE_ORDER)
 
@@ -103,6 +82,9 @@ PROBE_SHORT_LABELS: dict[str, str] = {
     "gated_conv": "GConv",
 }
 
+X_LABEL_FONTSIZE = 10
+VBAR_SCALE_FACTOR = 2e-5
+
 
 def parse_args():
     ap = argparse.ArgumentParser(
@@ -128,6 +110,17 @@ def orient_value(metric: str, value: float) -> float:
     if HIGHER_IS_BETTER[metric]:
         return float(value)
     return float(-value)
+
+
+def _normalize_values(values: pd.Series) -> pd.Series:
+    """Min-max normalize one oriented degradation curve over severity."""
+    y_min = float(values.min())
+    y_max = float(values.max())
+
+    if y_max > y_min:
+        return (values - y_min) / (y_max - y_min)
+
+    return pd.Series(np.nan, index=values.index, dtype=float)
 
 
 def _parse_condition(cond: dict) -> dict:
@@ -251,6 +244,10 @@ def load_tidy(
     df["severity_kind"] = df["intensity_kind"]
     df["q_raw"] = df["value"].astype(float)
     df["q_oriented"] = df.apply(lambda r: orient_value(r["metric"], r["q_raw"]), axis=1)
+    df["q_bar"] = df.groupby(
+        ["geometry", "metric", "severity_kind"],
+        sort=False,
+    )["q_oriented"].transform(_normalize_values)
 
     return df
 
@@ -259,47 +256,47 @@ def aggregate_q_v(tidy: pd.DataFrame) -> pd.DataFrame:
     """
     Compute probe-averaged reconstructability and cross-probe dispersion.
 
-    The input scores are first collapsed to q_hat_m(p,d,g,s). These estimates
-    are then averaged over probes to obtain Q_hat_m(d,g,s). V_hat_m(d,g,s) is
-    computed as the population variance across probes, matching the paper's
-    definition with denominator |P|.
+    The oriented scores are first normalized into q_bar_m(p,d,g,s). These
+    normalized scores are then averaged over probes to obtain Q_bar_m(d,g,s).
+    V_bar_m(d,g,s) is computed as the population variance across probes,
+    matching the paper's definition with denominator |P|.
     """
     probe_keys = ["probe", "domain", "geometry", "metric", "severity", "severity_kind"]
     cell_keys = ["domain", "geometry", "metric", "severity", "severity_kind"]
 
     per_probe = (
-        tidy.groupby(probe_keys, sort=False)["q_oriented"]
+        tidy.groupby(probe_keys, sort=False)["q_bar"]
         .mean()
-        .reset_index(name="q_hat")
+        .reset_index(name="q_bar")
     )
 
-    qhat = (
-        per_probe.groupby(cell_keys, sort=False)["q_hat"]
+    qbar = (
+        per_probe.groupby(cell_keys, sort=False)["q_bar"]
         .mean()
-        .reset_index(name="Q_hat")
+        .reset_index(name="Q_bar")
     )
 
-    merged = per_probe.merge(qhat, on=cell_keys, how="left")
+    merged = per_probe.merge(qbar, on=cell_keys, how="left")
 
-    vhat = (
+    vbar = (
         merged.groupby(cell_keys, sort=False)
-        .apply(lambda g: np.mean((g["q_hat"] - g["Q_hat"]) ** 2))
-        .reset_index(name="V_hat")
+        .apply(lambda g: np.mean((g["q_bar"] - g["Q_bar"]) ** 2))
+        .reset_index(name="V_bar")
     )
 
     nprobes = (
-        per_probe.groupby(cell_keys, sort=False)["q_hat"]
+        per_probe.groupby(cell_keys, sort=False)["q_bar"]
         .count()
         .reset_index(name="n_probes")
     )
 
-    agg = qhat.merge(vhat, on=cell_keys, how="left").merge(
+    agg = qbar.merge(vbar, on=cell_keys, how="left").merge(
         nprobes,
         on=cell_keys,
         how="left",
     )
 
-    agg["V_hat"] = agg["V_hat"].fillna(0.0)
+    agg["V_bar"] = agg["V_bar"].fillna(0.0)
 
     return agg
 
@@ -307,7 +304,7 @@ def aggregate_q_v(tidy: pd.DataFrame) -> pd.DataFrame:
 def build_dispersion_table(q_agg: pd.DataFrame) -> pd.DataFrame:
     """Create the per-severity dispersion table used for reporting."""
     out = q_agg.copy()
-    out["V_std"] = np.sqrt(out["V_hat"])
+    out["V_bar_std"] = np.sqrt(out["V_bar"])
 
     cols = [
         "domain",
@@ -315,9 +312,9 @@ def build_dispersion_table(q_agg: pd.DataFrame) -> pd.DataFrame:
         "metric",
         "severity",
         "severity_kind",
-        "Q_hat",
-        "V_hat",
-        "V_std",
+        "Q_bar",
+        "V_bar",
+        "V_bar_std",
         "n_probes",
     ]
 
@@ -330,18 +327,18 @@ def build_dispersion_summary(q_agg: pd.DataFrame) -> pd.DataFrame:
 
     for key, g in q_agg.groupby(["domain", "geometry", "metric"], sort=False):
         g = g.copy()
-        g["V_std"] = np.sqrt(g["V_hat"])
-        idx_max = g["V_std"].idxmax()
+        g["V_bar_std"] = np.sqrt(g["V_bar"])
+        idx_max = g["V_bar_std"].idxmax()
 
         rows.append({
             "domain": key[0],
             "geometry": key[1],
             "metric": key[2],
-            "mean_V_std": float(g["V_std"].mean()),
-            "max_V_std": float(g["V_std"].max()),
-            "severity_at_max_V_std": float(g.loc[idx_max, "severity"]),
+            "mean_V_bar_std": float(g["V_bar_std"].mean()),
+            "max_V_bar_std": float(g["V_bar_std"].max()),
+            "severity_at_max_V_bar_std": float(g.loc[idx_max, "severity"]),
             "severity_kind_at_max": str(g.loc[idx_max, "severity_kind"]),
-            "Q_hat_at_max_dispersion": float(g.loc[idx_max, "Q_hat"]),
+            "Q_bar_at_max_dispersion": float(g.loc[idx_max, "Q_bar"]),
             "n_severity_points": int(len(g)),
         })
 
@@ -352,7 +349,7 @@ def build_curves_long(tidy: pd.DataFrame, q_agg: pd.DataFrame) -> pd.DataFrame:
     """
     Export the long-form table of probe-level and aggregated curve values.
 
-    The table contains q_hat_m(p,d,g,s), Q_hat_m(d,g,s), V_hat_m(d,g,s),
+    The table contains q_bar_m(p,d,g,s), Q_bar_m(d,g,s), V_bar_m(d,g,s),
     the mean raw metric value, and counts documenting how many observations
     contributed to each probe-level estimate.
     """
@@ -362,14 +359,15 @@ def build_curves_long(tidy: pd.DataFrame, q_agg: pd.DataFrame) -> pd.DataFrame:
     per_probe = (
         tidy.groupby(probe_keys, sort=False)
         .agg(
-            q_hat=("q_oriented", "mean"),
+            q_bar=("q_bar", "mean"),
+            q_oriented_mean=("q_oriented", "mean"),
             q_raw_mean=("q_raw", "mean"),
-            n_rows=("q_oriented", "count"),
+            n_rows=("q_bar", "count"),
         )
         .reset_index()
     )
 
-    q_sub = q_agg[cell_keys + ["Q_hat", "V_hat", "n_probes"]]
+    q_sub = q_agg[cell_keys + ["Q_bar", "V_bar", "n_probes"]]
     long = per_probe.merge(q_sub, on=cell_keys, how="left")
 
     return long[
@@ -381,38 +379,21 @@ def build_curves_long(tidy: pd.DataFrame, q_agg: pd.DataFrame) -> pd.DataFrame:
             "severity_kind",
             "probe",
             "q_raw_mean",
-            "q_hat",
-            "Q_hat",
-            "V_hat",
+            "q_oriented_mean",
+            "q_bar",
+            "Q_bar",
+            "V_bar",
             "n_probes",
             "n_rows",
         ]
     ].sort_values(cell_keys + ["probe"])
 
 
-def _normalize_curve(
-    severities: np.ndarray,
-    values: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Min-max normalize a degradation curve over its evaluated severity range."""
+def compute_r_m(severities: np.ndarray, q_bar: np.ndarray) -> float:
+    """Compute normalized AUC R_m from a normalized probe-level degradation curve."""
     order = np.argsort(severities)
     x = severities[order].astype(float)
-    y = values[order].astype(float)
-
-    y_min = float(y.min())
-    y_max = float(y.max())
-
-    if y_max > y_min:
-        y_bar = (y - y_min) / (y_max - y_min)
-    else:
-        y_bar = np.full_like(y, np.nan)
-
-    return x, y_bar
-
-
-def compute_r_m(severities: np.ndarray, q_oriented: np.ndarray) -> float:
-    """Compute normalized AUC R_m from a probe-level degradation curve."""
-    x, y_bar = _normalize_curve(severities, q_oriented)
+    y_bar = q_bar[order].astype(float)
 
     if len(x) < 2:
         return float("nan")
@@ -434,9 +415,7 @@ def build_robustness_table(tidy: pd.DataFrame) -> pd.DataFrame:
     """
     Compute R_m for each probe, domain, geometry, and metric.
 
-    Repeated observations are first collapsed into q_hat_m(p,d,g,s). Each
-    resulting curve is then normalized to q_bar_m over its evaluated severity
-    range, and R_m is computed as normalized area under the curve. The returned
+    R_m is computed as normalized area under the q_bar_m curve. The returned
     table also includes the mean R_m across probes for visualization.
     """
     probe_curve_keys = [
@@ -449,9 +428,9 @@ def build_robustness_table(tidy: pd.DataFrame) -> pd.DataFrame:
     ]
 
     per_probe_curve = (
-        tidy.groupby(probe_curve_keys, sort=False)["q_oriented"]
+        tidy.groupby(probe_curve_keys, sort=False)["q_bar"]
         .mean()
-        .reset_index(name="q_hat")
+        .reset_index(name="q_bar")
     )
 
     rows: list[dict] = []
@@ -461,7 +440,7 @@ def build_robustness_table(tidy: pd.DataFrame) -> pd.DataFrame:
         g = g.sort_values("severity")
 
         s = g["severity"].to_numpy(dtype=float)
-        q = g["q_hat"].to_numpy(dtype=float)
+        q = g["q_bar"].to_numpy(dtype=float)
 
         rec = dict(zip(group_cols, key))
         rec["R_m"] = compute_r_m(s, q)
@@ -513,54 +492,59 @@ def _ordered_probes(probes) -> list[str]:
     return ordered
 
 
-def _metric_label(metric: str) -> str:
-    for candidates, _, y_label, _ in METRIC_SPECS:
-        if candidates[0] == metric:
-            return y_label
-
+def _metric_subscript_label(metric: str) -> str:
+    if metric == "psnr":
+        return "PSNR"
+    if metric == "ssim":
+        return "SSIM"
+    if metric == "lpips":
+        return "LPIPS"
+    if metric == "l1":
+        return "L1"
     return metric.upper()
 
 
-def _oriented_metric_label(metric: str) -> str:
-    """
-    Return the plotted metric label.
-
-    PSNR/SSIM are already higher-is-better. LPIPS/L1 are negated before
-    plotting, so the plotted axis uses a minus sign.
-    """
-    label = _metric_label(metric)
-
-    if HIGHER_IS_BETTER[metric]:
-        return label
-
-    return f"−{label}"
+def _axis_metric_label(symbol: str, metric: str) -> str:
+    return rf"$\bar{{{symbol}}}_{{\mathrm{{{_metric_subscript_label(metric)}}}}}$"
 
 
-def _compact_subplot_shape(n_panels: int) -> tuple[int, int]:
-    """Return a compact paper-style subplot layout."""
-    if n_panels <= 1:
-        return 1, 1
-
-    if n_panels <= 2:
-        return 1, 2
-
-    return 2, 2
+def _rm_axis_metric_label(metric: str) -> str:
+    return rf"$R_{{\mathrm{{{_metric_subscript_label(metric)}}}}}$"
 
 
-def _compact_figsize(n_panels: int) -> tuple[float, float]:
-    """
-    Select figure size from plots._utils.
+def _scale_factor_label(scale_factor: float) -> str:
+    if np.isclose(scale_factor, 1e-4):
+        return r"1e-4"
+    if np.isclose(scale_factor, 2e-5):
+        return r"2e-5"
+    return f"{scale_factor:g}"
 
-    Four-domain figures use FIG_2x2, which is near-square but still slightly
-    wider than tall.
-    """
-    if n_panels <= 1:
-        return FIG_SINGLE
 
-    if n_panels <= 2:
-        return FIG_DOUBLE
+def _vbar_axis_metric_label(metric: str, scale_factor: float | None = None) -> str:
+    return _axis_metric_label("V", metric)
 
-    return FIG_2x2
+
+def _save_figure(fig: plt.Figure, out_path: Path, *, dpi: int) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig.text(
+        1.035,
+        0.5,
+        "M",
+        transform=fig.transFigure,
+        fontsize=1,
+        alpha=0.0,
+        ha="left",
+        va="center",
+    )
+
+    fig.savefig(
+        out_path,
+        dpi=dpi,
+        bbox_inches="tight",
+        pad_inches=0.02,
+    )
+    plt.close(fig)
 
 
 def _hide_unused_axes(axes: np.ndarray, used: int) -> None:
@@ -569,172 +553,7 @@ def _hide_unused_axes(axes: np.ndarray, used: int) -> None:
         ax.set_visible(False)
 
 
-def _shared_legend(fig: plt.Figure, axes: np.ndarray) -> None:
-    handles, labels = [], []
-
-    for ax in axes.ravel():
-        h, l = ax.get_legend_handles_labels()
-
-        if l:
-            handles, labels = h, l
-            break
-
-    if not handles:
-        return
-
-    legend = fig.legend(
-        handles,
-        labels,
-        loc="lower center",
-        bbox_to_anchor=(0.5, 0.015),
-        ncol=2,
-        frameon=True,
-        fancybox=False,
-        edgecolor="lightgrey",
-        facecolor="white",
-        framealpha=1.0,
-        handlelength=2.2,
-        columnspacing=1.2,
-        borderpad=0.4,
-    )
-
-    legend.get_frame().set_linewidth(0.6)
-
-
-def _plot_ratio_panel(
-    ax: plt.Axes,
-    tidy: pd.DataFrame,
-    *,
-    domain: str,
-    metric: str,
-    probe: str | None,
-    value_col: str = "q_oriented",
-    show_xlabel: bool = False,
-    show_ylabel: bool = False,
-) -> None:
-    """Plot block and multi-block degradation curves for one compact domain panel."""
-    for geometry in RATIO_GEOMETRIES:
-        st = MASK_STYLE[geometry]
-
-        sub = tidy[
-            (tidy["domain"] == domain)
-            & (tidy["geometry"] == geometry)
-            & (tidy["metric"] == metric)
-            & (tidy["severity_kind"] == "ratio")
-        ].copy()
-
-        if probe is not None:
-            sub = sub[sub["probe"] == probe]
-
-        if sub.empty:
-            continue
-
-        sub = (
-            sub.groupby("severity", as_index=False)[value_col]
-            .mean()
-            .sort_values("severity")
-        )
-
-        ax.plot(
-            sub["severity"].to_numpy(),
-            sub[value_col].to_numpy(),
-            linestyle=st["linestyle"],
-            marker=st["marker"],
-            color=st["color"],
-            label=st["display"],
-            zorder=3,
-        )
-
-    add_train_boundary(ax)
-
-    ax.set_title(DOMAIN_LABELS.get(domain, domain), pad=3)
-
-    if show_xlabel:
-        ax.set_xlabel("Mask area (%)")
-    else:
-        ax.set_xlabel("")
-
-    if show_ylabel:
-        ax.set_ylabel(_oriented_metric_label(metric))
-    else:
-        ax.set_ylabel("")
-
-    ax.xaxis.set_major_locator(mticker.FixedLocator([2, 10, 20, 30, 40]))
-
-    # Show numeric tick labels on every subplot.
-    ax.tick_params(
-        axis="both",
-        which="both",
-        labelbottom=True,
-        labelleft=True,
-    )
-
-    ax.grid(True)
-
-
-def plot_qhat_curves(
-    tidy: pd.DataFrame,
-    q_agg: pd.DataFrame,
-    metric: str,
-    out_path: Path,
-    *,
-    dpi: int,
-) -> None:
-    """Plot compact near-square probe-averaged degradation curves."""
-    domains = _ordered_domains(tidy["domain"].unique())
-    n_domains = len(domains)
-
-    n_rows, n_cols = _compact_subplot_shape(n_domains)
-
-    fig, axes = plt.subplots(
-        n_rows,
-        n_cols,
-        figsize=_compact_figsize(n_domains),
-        squeeze=False,
-        sharex=False,
-        sharey=False,
-    )
-
-    metric_label = _metric_label(metric)
-
-    for idx, domain in enumerate(domains):
-        row, col = divmod(idx, n_cols)
-        ax = axes[row, col]
-
-        q_row = q_agg[
-            (q_agg["domain"] == domain)
-            & (q_agg["metric"] == metric)
-        ].copy()
-
-        q_row = q_row.rename(columns={"Q_hat": "q_oriented"})
-
-        _plot_ratio_panel(
-            ax,
-            q_row,
-            domain=domain,
-            metric=metric,
-            probe=None,
-            value_col="q_oriented",
-            show_xlabel=(row == n_rows - 1),
-            show_ylabel=True,
-        )
-
-    _hide_unused_axes(axes, n_domains)
-
-    fig.suptitle(
-        f"Probe-averaged {metric_label} degradation",
-        y=0.995,
-    )
-
-    _shared_legend(fig, axes)
-
-    fig.tight_layout(rect=(0, 0.08, 1, 0.93))
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=dpi)
-    plt.close(fig)
-
-
-def _draw_qhat_metric_domain_panel(
+def _draw_qbar_metric_domain_panel(
     ax: plt.Axes,
     q_agg: pd.DataFrame,
     *,
@@ -744,7 +563,7 @@ def _draw_qhat_metric_domain_panel(
     show_xlabel: bool,
     show_ylabel: bool,
 ) -> None:
-    """Draw one Q_hat metric panel with domains as curves."""
+    """Draw one Q_bar metric panel with domains as curves."""
     sub = q_agg[
         (q_agg["metric"] == metric)
         & (q_agg["geometry"] == geometry)
@@ -758,14 +577,14 @@ def _draw_qhat_metric_domain_panel(
             continue
 
         domain_curve = (
-            domain_sub.groupby("severity", as_index=False)["Q_hat"]
+            domain_sub.groupby("severity", as_index=False)["Q_bar"]
             .mean()
             .sort_values("severity")
         )
 
         ax.plot(
             domain_curve["severity"].to_numpy(),
-            domain_curve["Q_hat"].to_numpy(),
+            domain_curve["Q_bar"].to_numpy(),
             color=DOMAIN_COLORS.get(domain, "#333333"),
             linestyle=DOMAIN_LINESTYLES.get(domain, "-"),
             marker=DOMAIN_MARKERS.get(domain, "o"),
@@ -774,24 +593,21 @@ def _draw_qhat_metric_domain_panel(
         )
 
     add_train_boundary(ax)
-    ax.set_title(_metric_label(metric), pad=3)
+    ax.set_title("")
 
     if show_xlabel:
-        ax.set_xlabel("Mask area (%)")
+        ax.set_xlabel("Mask area (%)", fontsize=X_LABEL_FONTSIZE)
     else:
         ax.set_xlabel("")
 
-    if show_ylabel:
-        ax.set_ylabel(_oriented_metric_label(metric))
-    else:
-        ax.set_ylabel("")
+    ax.set_ylabel(_axis_metric_label("Q", metric))
 
     ax.xaxis.set_major_locator(mticker.FixedLocator([2, 10, 20, 30, 40]))
     ax.tick_params(axis="both", which="both", labelbottom=True, labelleft=True)
     ax.grid(True)
 
 
-def plot_qhat_metric_grid(
+def plot_qbar_metric_grid(
     tidy: pd.DataFrame,
     q_agg: pd.DataFrame,
     out_path: Path,
@@ -800,7 +616,7 @@ def plot_qhat_metric_grid(
     geometry: str = "block",
 ) -> None:
     """
-    Plot one compact 2x2 metric grid for Q_hat.
+    Plot one compact 2x2 metric grid for Q_bar.
 
     Each panel is a metric; each curve is a visual domain.
     """
@@ -821,7 +637,7 @@ def plot_qhat_metric_grid(
     for idx, metric in enumerate(metrics[: n_rows * n_cols]):
         row, col = divmod(idx, n_cols)
 
-        _draw_qhat_metric_domain_panel(
+        _draw_qbar_metric_domain_panel(
             axes[row, col],
             q_agg,
             metric=metric,
@@ -833,80 +649,132 @@ def plot_qhat_metric_grid(
 
     _hide_unused_axes(axes, min(len(metrics), n_rows * n_cols))
 
-    geometry_label = MASK_STYLE.get(geometry, {}).get("display", geometry)
-
-    fig.suptitle(
-        f"Probe-averaged degradation across metrics ({geometry_label})",
-        y=0.995,
-    )
-
     _shared_domain_legend(fig, axes)
 
-    fig.tight_layout(rect=(0, 0.08, 1, 0.93))
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=dpi)
-    plt.close(fig)
+    fig.tight_layout(rect=(0, 0.08, 1, 0.98))
+    _save_figure(fig, out_path, dpi=dpi)
 
 
-def plot_probe_curves(
-    tidy: pd.DataFrame,
+def _draw_vbar_metric_domain_panel(
+    ax: plt.Axes,
+    q_agg: pd.DataFrame,
+    *,
     metric: str,
-    probe: str,
+    domains: list[str],
+    geometry: str,
+    show_xlabel: bool,
+    show_ylabel: bool,
+    scale_factor: float | None = None,
+) -> None:
+    """Draw one V_bar metric panel with domains as curves."""
+    sub = q_agg[
+        (q_agg["metric"] == metric)
+        & (q_agg["geometry"] == geometry)
+        & (q_agg["severity_kind"] == "ratio")
+    ].copy()
+
+    for domain in domains:
+        domain_sub = sub[sub["domain"] == domain]
+
+        if domain_sub.empty:
+            continue
+
+        domain_curve = (
+            domain_sub.groupby("severity", as_index=False)["V_bar"]
+            .mean()
+            .sort_values("severity")
+        )
+
+        y = domain_curve["V_bar"].to_numpy()
+        if scale_factor is not None:
+            y = y / scale_factor
+
+        ax.plot(
+            domain_curve["severity"].to_numpy(),
+            y,
+            color=DOMAIN_COLORS.get(domain, "#333333"),
+            linestyle=DOMAIN_LINESTYLES.get(domain, "-"),
+            marker=DOMAIN_MARKERS.get(domain, "o"),
+            label=DOMAIN_LABELS.get(domain, domain),
+            zorder=3,
+        )
+
+    add_train_boundary(ax)
+    ax.set_title("")
+
+    if show_xlabel:
+        ax.set_xlabel("Mask area (%)", fontsize=X_LABEL_FONTSIZE)
+    else:
+        ax.set_xlabel("")
+
+    ax.set_ylabel(_vbar_axis_metric_label(metric, scale_factor))
+
+    ax.xaxis.set_major_locator(mticker.FixedLocator([2, 10, 20, 30, 40]))
+    if scale_factor is None:
+        ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0), useMathText=False)
+    ax.tick_params(axis="both", which="both", labelbottom=True, labelleft=True)
+    ax.set_ylim(bottom=0)
+    ax.grid(True)
+
+
+def plot_vbar_metric_grid(
+    tidy: pd.DataFrame,
+    q_agg: pd.DataFrame,
     out_path: Path,
     *,
     dpi: int,
+    geometry: str = "block",
+    scale_factor: float | None = None,
 ) -> None:
-    """Plot compact near-square probe-level degradation curves."""
-    domains = _ordered_domains(tidy["domain"].unique())
-    n_domains = len(domains)
+    """
+    Plot one compact 2x2 metric grid for V_bar.
 
-    n_rows, n_cols = _compact_subplot_shape(n_domains)
+    Each panel is a metric; each curve is a visual domain.
+    """
+    domains = _ordered_domains(tidy["domain"].unique())
+    metrics = [m for m in METRICS if m in tidy["metric"].values]
+
+    n_rows, n_cols = 2, 2
 
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
-        figsize=_compact_figsize(n_domains),
+        figsize=FIG_2x2,
         squeeze=False,
         sharex=False,
         sharey=False,
     )
 
-    metric_label = _metric_label(metric)
-    probe_label = MODEL_LABELS.get(probe, probe)
-
-    sub_tidy = tidy[
-        (tidy["metric"] == metric)
-        & (tidy["probe"] == probe)
-    ].copy()
-
-    for idx, domain in enumerate(domains):
+    for idx, metric in enumerate(metrics[: n_rows * n_cols]):
         row, col = divmod(idx, n_cols)
-        ax = axes[row, col]
 
-        _plot_ratio_panel(
-            ax,
-            sub_tidy,
-            domain=domain,
+        _draw_vbar_metric_domain_panel(
+            axes[row, col],
+            q_agg,
             metric=metric,
-            probe=probe,
-            value_col="q_oriented",
+            domains=domains,
+            geometry=geometry,
             show_xlabel=(row == n_rows - 1),
-            show_ylabel=True,
+            show_ylabel=(col == 0),
+            scale_factor=scale_factor,
         )
 
-    _hide_unused_axes(axes, n_domains)
+    _hide_unused_axes(axes, min(len(metrics), n_rows * n_cols))
 
-    fig.suptitle(
-        f"{probe_label}: {metric_label} degradation",
-        y=0.995,
-    )
+    _shared_domain_legend(fig, axes)
 
-    _shared_legend(fig, axes)
+    if scale_factor is not None:
+        fig.text(
+            0.5,
+            0.075,
+            f"Scale factor: {_scale_factor_label(scale_factor)}",
+            ha="center",
+            va="center",
+            fontsize=9,
+        )
 
-    fig.tight_layout(rect=(0, 0.08, 1, 0.93))
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=dpi)
-    plt.close(fig)
+    fig.tight_layout(rect=(0, 0.08, 1, 0.98))
+    _save_figure(fig, out_path, dpi=dpi)
 
 
 def _draw_probe_metric_domain_panel(
@@ -935,14 +803,14 @@ def _draw_probe_metric_domain_panel(
             continue
 
         domain_curve = (
-            domain_sub.groupby("severity", as_index=False)["q_oriented"]
+            domain_sub.groupby("severity", as_index=False)["q_bar"]
             .mean()
             .sort_values("severity")
         )
 
         ax.plot(
             domain_curve["severity"].to_numpy(),
-            domain_curve["q_oriented"].to_numpy(),
+            domain_curve["q_bar"].to_numpy(),
             color=DOMAIN_COLORS.get(domain, "#333333"),
             linestyle=DOMAIN_LINESTYLES.get(domain, "-"),
             marker=DOMAIN_MARKERS.get(domain, "o"),
@@ -951,17 +819,14 @@ def _draw_probe_metric_domain_panel(
         )
 
     add_train_boundary(ax)
-    ax.set_title(_metric_label(metric), pad=3)
+    ax.set_title("")
 
     if show_xlabel:
-        ax.set_xlabel("Mask area (%)")
+        ax.set_xlabel("Mask area (%)", fontsize=X_LABEL_FONTSIZE)
     else:
         ax.set_xlabel("")
 
-    if show_ylabel:
-        ax.set_ylabel(_oriented_metric_label(metric))
-    else:
-        ax.set_ylabel("")
+    ax.set_ylabel(_axis_metric_label("q", metric))
 
     ax.xaxis.set_major_locator(mticker.FixedLocator([2, 10, 20, 30, 40]))
     ax.tick_params(axis="both", which="both", labelbottom=True, labelleft=True)
@@ -1043,20 +908,10 @@ def plot_probe_metric_grid(
 
     _hide_unused_axes(axes, min(len(metrics), n_rows * n_cols))
 
-    probe_label = MODEL_LABELS.get(probe, probe)
-    geometry_label = MASK_STYLE.get(geometry, {}).get("display", geometry)
-
-    fig.suptitle(
-        f"{probe_label}: degradation across metrics ({geometry_label})",
-        y=0.995,
-    )
-
     _shared_domain_legend(fig, axes)
 
-    fig.tight_layout(rect=(0, 0.08, 1, 0.93))
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=dpi)
-    plt.close(fig)
+    fig.tight_layout(rect=(0, 0.08, 1, 0.98))
+    _save_figure(fig, out_path, dpi=dpi)
 
 
 def _draw_rm_bar_panel(
@@ -1104,7 +959,7 @@ def _draw_rm_bar_panel(
             zorder=3,
         )
 
-    ax.set_title(_metric_label(metric), pad=3)
+    ax.set_title("")
     ax.set_xticks(x)
     ax.set_xticklabels(
         [DOMAIN_SHORT_LABELS.get(domain, DOMAIN_LABELS.get(domain, domain)) for domain in domains],
@@ -1118,10 +973,7 @@ def _draw_rm_bar_panel(
     else:
         ax.set_xlabel("")
 
-    if show_ylabel:
-        ax.set_ylabel("$R_m$")
-    else:
-        ax.set_ylabel("")
+    ax.set_ylabel(_rm_axis_metric_label(metric))
 
     tick_step = 0.1 if y_upper <= 0.6 else 0.2
     ax.yaxis.set_major_locator(mticker.MultipleLocator(tick_step))
@@ -1212,26 +1064,17 @@ def plot_rm_bar_grid(
 
     _hide_unused_axes(axes, min(len(metrics), n_rows * n_cols))
 
-    geometry_label = MASK_STYLE.get(geometry, {}).get("display", geometry)
-
-    fig.suptitle(
-        f"Robustness $R_m$ across metrics ({geometry_label})",
-        y=0.97,
-    )
-
     _shared_probe_legend(fig, axes)
 
     fig.subplots_adjust(
         left=0.08,
         right=0.99,
         bottom=0.16,
-        top=0.88,
+        top=0.96,
         wspace=0.22,
         hspace=0.42,
     )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=dpi)
-    plt.close(fig)
+    _save_figure(fig, out_path, dpi=dpi)
 
 
 def save_manifest(out_dir: Path, args, tidy: pd.DataFrame, n_figures: int) -> None:
@@ -1251,9 +1094,9 @@ def save_manifest(out_dir: Path, args, tidy: pd.DataFrame, n_figures: int) -> No
             "Block severity values are target masked-area ratios.",
             "Probe models are evaluated under the same cross-geometry protocol.",
             "Cross-probe dispersion is reported in paper_dispersion.csv and paper_dispersion_summary.csv.",
-            "V_hat is exported in paper_curves_long.csv and paper_dispersion.csv.",
-            "Per-probe all-metric figures plot one metric per panel and one visual domain per curve.",
-            "LPIPS and L1 are negated so that larger oriented values indicate better reconstruction.",
+            "q_bar, Q_bar, and V_bar follow the paper notation for normalized degradation curves.",
+            "Per-probe all-metric figures plot normalized q_bar_m with one metric per panel and one visual domain per curve.",
+            "LPIPS and L1 are oriented before normalization so that larger normalized values indicate better reconstruction.",
         ],
     }
 
@@ -1325,17 +1168,31 @@ def main():
 
     saved = 0
 
-    p_qhat = out_dir / "degradation_Qhat_all_metrics.png"
+    p_qbar = out_dir / "degradation_Qbar_all_metrics.png"
 
-    plot_qhat_metric_grid(
+    plot_qbar_metric_grid(
         tidy,
         q_agg,
-        p_qhat,
+        p_qbar,
         dpi=args.dpi,
         geometry="block",
     )
 
-    print(f"Saved {p_qhat}")
+    print(f"Saved {p_qbar}")
+    saved += 1
+
+    p_vbar = out_dir / "dispersion_Vbar_all_metrics.png"
+
+    plot_vbar_metric_grid(
+        tidy,
+        q_agg,
+        p_vbar,
+        dpi=args.dpi,
+        geometry="block",
+        scale_factor=VBAR_SCALE_FACTOR,
+    )
+
+    print(f"Saved {p_vbar}")
     saved += 1
 
     p_rm_bar = out_dir / "robustness_Rm_all_metrics_bar.png"
