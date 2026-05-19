@@ -1,17 +1,19 @@
 """
 Shared utilities for all plots/ scripts.
-
-No imports from the rest of the codebase — only stdlib + numpy + matplotlib.
 """
 from __future__ import annotations
 
+import glob
 import json
 from pathlib import Path
-from typing import Optional
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RUNS_ROOT = REPO_ROOT / "runs"
 
 # ── Metrics ─────────────────────────────────────────────────────────────────
 # Each entry: (key_candidates, short_title, y_axis_label, higher_is_better)
@@ -19,15 +21,12 @@ METRICS: list[tuple[list[str], str, str, bool]] = [
     (["psnr", "psnr_mask", "psnr_full"],   "PSNR",      "PSNR (dB)",   True),
     (["ssim", "ssim_mask", "ssim_full"],   "SSIM",      "SSIM",        True),
     (["lpips", "lpips_mask", "lpips_full"],"LPIPS",     "LPIPS",       False),
-    (["l1", "l1_mask", "l1_full"],         "Masked L1", "Masked L1",   False),
+    (["l1", "l1_mask", "l1_full"],         "L1",        "L1",          False),
 ]
 METRIC_CANONICAL = [m[0][0] for m in METRICS]   # ["psnr", "ssim", "lpips", "l1"]
-
-COLORBAR_LABELS: dict[str, str] = {
-    "psnr":  "PSNR (higher is better)",
-    "ssim":  "SSIM (higher is better)",
-    "lpips": "LPIPS (lower is better)",
-    "l1":    "Masked L1 (lower is better)",
+HIGHER_IS_BETTER: dict[str, bool] = {
+    candidates[0]: higher_better
+    for candidates, _, _, higher_better in METRICS
 }
 
 # ── Domain ordering and display labels ──────────────────────────────────────
@@ -80,7 +79,6 @@ TRAIN_SEVERITY_MAX = 30
 FIG_SINGLE  = (3.5,  2.6)   # one journal column
 FIG_DOUBLE  = (7.0,  2.6)   # two journal columns
 FIG_2x2     = (7.0,  5.4)   # 2×2 panel grid
-FIG_2x2_SQ  = (7.0,  6.0)   # 2×2 slightly taller (heatmaps)
 
 
 # ── Paper style ───────────────────────────────────────────────────────────────
@@ -91,11 +89,11 @@ def set_paper_style() -> None:
         "font.family":          "serif",
         "mathtext.fontset":     "cm",
         "font.size":            8,
-        "axes.labelsize":       8,
+        "axes.labelsize":       12,
         "axes.titlesize":       8,
         "legend.fontsize":      7,
-        "xtick.labelsize":      7,
-        "ytick.labelsize":      7,
+        "xtick.labelsize":      9,
+        "ytick.labelsize":      9,
         "axes.linewidth":       0.7,
         "grid.linewidth":       0.4,
         "grid.alpha":           0.3,
@@ -118,6 +116,67 @@ def load_result(path: str | Path) -> dict:
 def result_identity(result: dict) -> tuple[str, str]:
     """Return (model_name, dataset_name)."""
     return result.get("model", "unknown"), result.get("dataset", "unknown")
+
+
+def discover_eval_paths(
+    runs_root: str | Path = DEFAULT_RUNS_ROOT,
+    protocol: str = "degradation_v1",
+    split: str = "val",
+    epoch: str = "*",
+) -> list[Path]:
+    """Find eval_results.json files under the standard runs/ layout."""
+    runs_root = Path(runs_root).resolve()
+    pattern = str(
+        runs_root / "*" / "eval" / protocol / split / f"epoch_{epoch}" / "eval_results.json"
+    )
+    return [Path(p) for p in sorted(glob.glob(pattern))]
+
+
+def resolve_eval_paths(
+    results: list[str | Path] | None = None,
+    *,
+    runs_root: str | Path = DEFAULT_RUNS_ROOT,
+    protocol: str = "degradation_v1",
+    split: str = "val",
+    epoch: str = "*",
+) -> list[Path]:
+    """Use explicit eval paths when provided, otherwise discover them from runs/."""
+    if results:
+        return [Path(p).resolve() for p in results]
+    return discover_eval_paths(
+        runs_root=runs_root,
+        protocol=protocol,
+        split=split,
+        epoch=epoch,
+    )
+
+
+def load_by_domain_model(
+    results: list[str | Path] | None = None,
+    *,
+    runs_root: str | Path = DEFAULT_RUNS_ROOT,
+    protocol: str = "degradation_v1",
+    split: str = "val",
+    epoch: str = "*",
+    family: str = "block",
+) -> tuple[dict[tuple[str, str], list[tuple[float, dict]]], list[str]]:
+    """Load eval curves as {(domain, model): points}, plus ordered domains."""
+    by_domain_model: dict[tuple[str, str], list[tuple[float, dict]]] = {}
+    for path in resolve_eval_paths(
+        results,
+        runs_root=runs_root,
+        protocol=protocol,
+        split=split,
+        epoch=epoch,
+    ):
+        data = load_result(path)
+        model, domain = result_identity(data)
+        by_domain_model[(domain, model)] = extract_curve(data, family=family)
+        print(f"  loaded  model={model:<14}  domain={domain}")
+
+    present = {domain for domain, _ in by_domain_model}
+    domains = ordered_domains(present)
+    return by_domain_model, domains
 
 
 # ── Curve extraction ──────────────────────────────────────────────────────────
@@ -164,6 +223,159 @@ def get_xy(
     return xs, ys
 
 
+def _parse_condition(cond: dict) -> dict:
+    """Pull eval_mask + intensity out of one evaluation condition."""
+    mask_yaml = cond.get("mask_yaml", "") or ""
+    eval_mask = Path(mask_yaml).stem or "unknown"
+    mask_ratios = cond.get("mask_ratios") or []
+
+    if eval_mask in ("block", "multi_block") and mask_ratios:
+        return {
+            "eval_mask": eval_mask,
+            "intensity": float(mask_ratios[0]),
+            "intensity_kind": "ratio",
+        }
+
+    if eval_mask == "freeform":
+        n_strokes = (cond.get("mask_overrides") or {}).get("num_strokes")
+        if n_strokes is not None:
+            return {
+                "eval_mask": eval_mask,
+                "intensity": float(n_strokes),
+                "intensity_kind": "strokes",
+            }
+
+    return {
+        "eval_mask": eval_mask,
+        "intensity": float("nan"),
+        "intensity_kind": "unknown",
+    }
+
+
+def load_eval_file_long(path: str | Path) -> list[dict]:
+    """Read one eval_results.json into long-format metric rows."""
+    path = Path(path).resolve()
+    data = load_result(path)
+
+    base = {
+        "model": data.get("model", "unknown"),
+        "dataset": data.get("dataset", "unknown"),
+        "train_mask": data.get("mask", "unknown"),
+        "epoch": data.get("epoch"),
+        "checkpoint": data.get("checkpoint_name"),
+        "source": str(path),
+    }
+
+    rows: list[dict] = []
+    for cond in data.get("conditions", []):
+        parsed = _parse_condition(cond)
+        metrics = cond.get("metrics", {}) or {}
+
+        for metric in METRIC_CANONICAL:
+            for scope in ("mask", "full"):
+                key = f"{metric}_{scope}"
+                value = metrics.get(key)
+                if value is None and scope == "mask":
+                    value = metrics.get(metric)
+                if value is None:
+                    continue
+
+                rows.append({
+                    **base,
+                    "condition": cond.get("condition"),
+                    "eval_mask": parsed["eval_mask"],
+                    "intensity": parsed["intensity"],
+                    "intensity_kind": parsed["intensity_kind"],
+                    "metric": metric,
+                    "scope": scope,
+                    "value": float(value),
+                    "higher_is_better": HIGHER_IS_BETTER[metric],
+                })
+
+    return rows
+
+
+def load_all_evals(
+    results: list[str | Path] | None = None,
+    *,
+    runs_root: str | Path = DEFAULT_RUNS_ROOT,
+    protocol: str = "degradation_v1",
+    split: str = "val",
+    epoch: str = "*",
+) -> pd.DataFrame:
+    """Load all requested/discovered eval JSONs into a long DataFrame."""
+    rows: list[dict] = []
+    for path in resolve_eval_paths(
+        results,
+        runs_root=runs_root,
+        protocol=protocol,
+        split=split,
+        epoch=epoch,
+    ):
+        rows.extend(load_eval_file_long(path))
+    return pd.DataFrame(rows)
+
+
+def _normalize_series(values: pd.Series) -> pd.Series:
+    """Min-max normalize one oriented curve."""
+    y_min = float(values.min())
+    y_max = float(values.max())
+    if y_max > y_min:
+        return (values - y_min) / (y_max - y_min)
+    return pd.Series(np.nan, index=values.index, dtype=float)
+
+
+def orient_value(metric: str, value: float) -> float:
+    """Orient one metric value so that larger is better."""
+    if HIGHER_IS_BETTER[metric]:
+        return float(value)
+    return float(-value)
+
+
+def load_tidy_evals(
+    results: list[str | Path] | None = None,
+    *,
+    runs_root: str | Path = DEFAULT_RUNS_ROOT,
+    protocol: str = "degradation_v1",
+    split: str = "val",
+    epoch: str = "*",
+    scope: str = "mask",
+    geometries: tuple[str, ...] = ("block",),
+    severity_kind: str = "ratio",
+) -> pd.DataFrame:
+    """Return tidy eval rows with q_raw, q_oriented, and q_bar columns."""
+    df = load_all_evals(
+        results,
+        runs_root=runs_root,
+        protocol=protocol,
+        split=split,
+        epoch=epoch,
+    )
+
+    if df.empty:
+        return df
+
+    df = df[df["scope"] == scope].copy()
+    df = df[
+        df["eval_mask"].isin(geometries)
+        & (df["intensity_kind"] == severity_kind)
+    ].copy()
+
+    df["domain"] = df["dataset"]
+    df["probe"] = df["model"]
+    df["geometry"] = df["eval_mask"]
+    df["severity"] = df["intensity"]
+    df["severity_kind"] = df["intensity_kind"]
+    df["q_raw"] = df["value"].astype(float)
+    df["q_oriented"] = df.apply(lambda r: orient_value(r["metric"], r["q_raw"]), axis=1)
+    df["q_bar"] = df.groupby(
+        ["geometry", "metric", "severity_kind"],
+        sort=False,
+    )["q_oriented"].transform(_normalize_series)
+
+    return df
+
+
 # ── Math ──────────────────────────────────────────────────────────────────────
 
 def orient(ys: list[float], higher_better: bool) -> list[float]:
@@ -171,70 +383,229 @@ def orient(ys: list[float], higher_better: bool) -> list[float]:
     return list(ys) if higher_better else [-y for y in ys]
 
 
-def normalized_auc(
+def normalize(ys: list[float]) -> list[float]:
+    """Min-max normalize a single oriented degradation curve to q_bar."""
+    if not ys:
+        return []
+    y_min, y_max = min(ys), max(ys)
+    if abs(y_max - y_min) < 1e-12:
+        return [float("nan") for _ in ys]
+    return [(y - y_min) / (y_max - y_min) for y in ys]
+
+
+def oriented_normalized_curve(
     xs: list[float],
     ys: list[float],
     higher_better: bool,
-) -> Optional[float]:
-    """
-    R_m per the paper:
-      1. Orient ys (higher = better).
-      2. Normalize to [0,1] over the severity range.
-      3. Return trapz / (s_max - s_min).
-    Returns None for fewer than 2 points.
-    """
-    if len(xs) < 2:
-        return None
-    ys_o  = orient(ys, higher_better)
-    y_min, y_max = min(ys_o), max(ys_o)
-    if abs(y_max - y_min) < 1e-12:
-        return 1.0
-    ys_n = [(y - y_min) / (y_max - y_min) for y in ys_o]
-    area = sum(
-        (xs[i] - xs[i - 1]) * (ys_n[i] + ys_n[i - 1]) / 2.0
-        for i in range(1, len(xs))
+) -> tuple[list[float], list[float]]:
+    """Return (severity, q_bar) after orientation and curve-wise normalization."""
+    pairs = sorted(zip(xs, ys), key=lambda p: p[0])
+    if not pairs:
+        return [], []
+    xs_sorted = [float(x) for x, _ in pairs]
+    ys_sorted = [float(y) for _, y in pairs]
+    return xs_sorted, normalize(orient(ys_sorted, higher_better))
+
+
+def ordered_domains(domains) -> list[str]:
+    """Order domains by the paper's canonical order, then alphabetically."""
+    present = list(domains)
+    ordered = [d for d in DOMAIN_ORDER if d in present]
+    ordered += sorted(d for d in present if d not in ordered)
+    return ordered
+
+
+def ordered_models(models) -> list[str]:
+    """Order models by the paper's canonical order, then alphabetically."""
+    present = list(models)
+    ordered = [m for m in MODEL_ORDER if m in present]
+    ordered += sorted(m for m in present if m not in ordered)
+    return ordered
+
+
+def aggregate_q_v(tidy: pd.DataFrame) -> pd.DataFrame:
+    """Compute Q_bar and V_bar from tidy q_bar rows."""
+    probe_keys = ["probe", "domain", "geometry", "metric", "severity", "severity_kind"]
+    cell_keys = ["domain", "geometry", "metric", "severity", "severity_kind"]
+
+    per_probe = (
+        tidy.groupby(probe_keys, sort=False)["q_bar"]
+        .mean()
+        .reset_index(name="q_bar")
     )
-    return float(area / (xs[-1] - xs[0]))
+
+    qbar = (
+        per_probe.groupby(cell_keys, sort=False)["q_bar"]
+        .mean()
+        .reset_index(name="Q_bar")
+    )
+
+    merged = per_probe.merge(qbar, on=cell_keys, how="left")
+    vbar = (
+        merged.groupby(cell_keys, sort=False)
+        .apply(lambda g: np.nanmean((g["q_bar"] - g["Q_bar"]) ** 2))
+        .reset_index(name="V_bar")
+    )
+    nprobes = (
+        per_probe.groupby(cell_keys, sort=False)["q_bar"]
+        .count()
+        .reset_index(name="n_probes")
+    )
+
+    agg = qbar.merge(vbar, on=cell_keys, how="left").merge(
+        nprobes,
+        on=cell_keys,
+        how="left",
+    )
+    agg["V_bar"] = agg["V_bar"].fillna(0.0)
+    return agg
 
 
-def model_averaged_curve(
-    curves: list[tuple[list[float], list[float]]],
-) -> tuple[list[float], list[float]]:
-    """
-    Q_hat(d,g,s): mean across probes at each shared severity.
-    curves: [(xs, ys_oriented), ...]
-    """
-    if not curves:
-        return [], []
-    sets = [set(map(float, xs)) for xs, _ in curves if xs]
-    if not sets:
-        return [], []
-    common = sorted(sets[0].intersection(*sets[1:]))
-    means  = []
-    for s in common:
-        vals = [y for xs, ys in curves for x, y in zip(xs, ys) if abs(float(x) - s) < 1e-9]
-        means.append(float(np.mean(vals)))
-    return common, means
+def build_curves_long(tidy: pd.DataFrame, q_agg: pd.DataFrame) -> pd.DataFrame:
+    """Export q_bar, Q_bar, and V_bar in long form."""
+    probe_keys = ["probe", "domain", "geometry", "metric", "severity", "severity_kind"]
+    cell_keys = ["domain", "geometry", "metric", "severity", "severity_kind"]
+
+    per_probe = (
+        tidy.groupby(probe_keys, sort=False)
+        .agg(
+            q_bar=("q_bar", "mean"),
+            q_oriented_mean=("q_oriented", "mean"),
+            q_raw_mean=("q_raw", "mean"),
+            n_rows=("q_bar", "count"),
+        )
+        .reset_index()
+    )
+
+    long = per_probe.merge(
+        q_agg[cell_keys + ["Q_bar", "V_bar", "n_probes"]],
+        on=cell_keys,
+        how="left",
+    )
+
+    return long[
+        [
+            "domain",
+            "geometry",
+            "metric",
+            "severity",
+            "severity_kind",
+            "probe",
+            "q_raw_mean",
+            "q_oriented_mean",
+            "q_bar",
+            "Q_bar",
+            "V_bar",
+            "n_probes",
+            "n_rows",
+        ]
+    ].sort_values(cell_keys + ["probe"])
 
 
-def cross_probe_dispersion(
-    curves: list[tuple[list[float], list[float]]],
-) -> tuple[list[float], list[float]]:
-    """
-    V_hat(d,g,s): mean squared deviation from Q_hat across probes.
-    curves: [(xs, ys_oriented), ...]
-    """
-    common_xs, q_hat = model_averaged_curve(curves)
-    if not common_xs:
-        return [], []
-    dispersions = []
-    for s, q in zip(common_xs, q_hat):
-        devs = [(y - q) ** 2
-                for xs, ys in curves
-                for x, y in zip(xs, ys)
-                if abs(float(x) - s) < 1e-9]
-        dispersions.append(float(np.mean(devs)) if devs else 0.0)
-    return common_xs, dispersions
+def build_dispersion_table(q_agg: pd.DataFrame) -> pd.DataFrame:
+    """Create the per-severity V_bar table used for reporting."""
+    out = q_agg.copy()
+    out["V_bar_std"] = np.sqrt(out["V_bar"])
+    cols = [
+        "domain",
+        "geometry",
+        "metric",
+        "severity",
+        "severity_kind",
+        "Q_bar",
+        "V_bar",
+        "V_bar_std",
+        "n_probes",
+    ]
+    return out[cols].sort_values(cols[:5])
+
+
+def build_dispersion_summary(q_agg: pd.DataFrame) -> pd.DataFrame:
+    """Summarize V_bar across severity levels."""
+    rows: list[dict] = []
+    for key, g in q_agg.groupby(["domain", "geometry", "metric"], sort=False):
+        g = g.copy()
+        g["V_bar_std"] = np.sqrt(g["V_bar"])
+        idx_max = g["V_bar_std"].idxmax()
+        rows.append({
+            "domain": key[0],
+            "geometry": key[1],
+            "metric": key[2],
+            "mean_V_bar_std": float(g["V_bar_std"].mean()),
+            "max_V_bar_std": float(g["V_bar_std"].max()),
+            "severity_at_max_V_bar_std": float(g.loc[idx_max, "severity"]),
+            "severity_kind_at_max": str(g.loc[idx_max, "severity_kind"]),
+            "Q_bar_at_max_dispersion": float(g.loc[idx_max, "Q_bar"]),
+            "n_severity_points": int(len(g)),
+        })
+    return pd.DataFrame(rows).sort_values(["domain", "geometry", "metric"])
+
+
+def compute_r_m_from_qbar(severities: np.ndarray, q_bar: np.ndarray) -> float:
+    """Compute normalized AUC R_m from an already-normalized q_bar curve."""
+    order = np.argsort(severities)
+    x = severities[order].astype(float)
+    y = q_bar[order].astype(float)
+    if len(x) < 2 or np.isnan(y).any():
+        return float("nan")
+    span = float(x[-1] - x[0])
+    if span <= 0:
+        return float("nan")
+    return float(np.trapezoid(y, x) / span)
+
+
+def build_robustness_table(tidy: pd.DataFrame) -> pd.DataFrame:
+    """Compute R_m for each probe, domain, geometry, and metric."""
+    probe_curve_keys = [
+        "probe",
+        "domain",
+        "geometry",
+        "metric",
+        "severity",
+        "severity_kind",
+    ]
+    per_probe_curve = (
+        tidy.groupby(probe_curve_keys, sort=False)["q_bar"]
+        .mean()
+        .reset_index(name="q_bar")
+    )
+
+    rows: list[dict] = []
+    group_cols = ["probe", "domain", "geometry", "metric"]
+    for key, g in per_probe_curve.groupby(group_cols, sort=False):
+        g = g.sort_values("severity")
+        rec = dict(zip(group_cols, key))
+        rec["R_m"] = compute_r_m_from_qbar(
+            g["severity"].to_numpy(dtype=float),
+            g["q_bar"].to_numpy(dtype=float),
+        )
+        rec["n_points"] = int(len(g))
+        rec["severity_kind"] = str(g["severity_kind"].iloc[0])
+        rows.append(rec)
+
+    per_probe = pd.DataFrame(rows)
+    if per_probe.empty:
+        return per_probe
+
+    per_probe["R_m_mean_over_probes"] = per_probe.groupby(
+        ["domain", "geometry", "metric"],
+        sort=False,
+    )["R_m"].transform("mean")
+
+    mean_rows: list[dict] = []
+    for key, g in per_probe.groupby(["domain", "geometry", "metric"], sort=False):
+        mean_rows.append({
+            "domain": key[0],
+            "geometry": key[1],
+            "metric": key[2],
+            "probe": "__mean_over_probes__",
+            "R_m": float(g["R_m"].mean()),
+            "R_m_mean_over_probes": float(g["R_m"].mean()),
+            "n_points": int(g["n_points"].max()),
+            "severity_kind": str(g["severity_kind"].iloc[0]),
+        })
+
+    return pd.concat([per_probe, pd.DataFrame(mean_rows)], ignore_index=True)
 
 
 # ── Save helper ───────────────────────────────────────────────────────────────
