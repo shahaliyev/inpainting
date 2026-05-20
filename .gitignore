@@ -29,7 +29,7 @@ runs/
 experiments/
 logs/
 outputs/
-figures/
+pdf/
 
 # Model checkpoints
 checkpoints/

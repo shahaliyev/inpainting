@@ -195,7 +195,19 @@ Always launch with `python -m streamlit` (not `streamlit run`) to ensure the act
 
 **Committing `.streamlit/config.toml`**: this file sets the light theme and `headless = true`; commit it so all contributors see a consistent UI without extra configuration.
 
+## Paper Figures
+
+Generate the degradation curves and cross-probe dispersion figures for the paper:
+
+```powershell
+python tools/plot_for_paper.py --out_dir figures/paper
+```
+
+Outputs PNG and PDF to `figures/paper/` and `figures/paper/pdf/`. Discovers all `eval_results.json` files under `runs/` automatically.
+
 ## Plot Degradation Curves
+
+Quick per-run comparison plots (not the paper figures):
 
 ```bash
 python tools/plot_degradation.py --results runs/<train_run>/eval/degradation_v1/val/epoch_<n>/eval_results.json
