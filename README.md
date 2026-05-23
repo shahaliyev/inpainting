@@ -3,7 +3,7 @@
 ![Python 3.10](https://img.shields.io/badge/python-3.10-blue)
 ![PyTorch 2.10](https://img.shields.io/badge/pytorch-2.10-ee4c2c)
 
-Code for controlled image inpainting reconstructability experiments across mask severity, visual domain, and reconstruction probe.
+A codebase for controlled image inpainting reconstructability experiments, designed to study how reconstruction behavior changes with mask severity, mask geometry, visual domain, and reconstruction probe.
 
 <div align="center">
   <img src="figures/paper/domain_mask_demo_block.png" width="600">
@@ -25,7 +25,7 @@ The central goal is not only to ask which model scores best, but to measure when
 - Versioned benchmark profiles for training and degradation evaluation.
 - Scripts for figures, per-run plots, train/validation curves, and an interactive validation app.
 
-## Method And Protocol
+## Method and Protocol
 
 Let `I` be a clean image and `M` be a binary mask where `M_ij = 1` denotes a missing pixel. The observed image is:
 
@@ -66,18 +66,38 @@ Cross-probe dispersion is computed after orienting metrics so higher is better a
 \right)^2
 }
 ```
+### Experimental Design
 
 | Component | Setting |
 |---|---|
-| Input | `concat(I_obs, M)`, shape `4 x 256 x 256` |
-| Output | RGB reconstruction, shape `3 x 256 x 256` |
+| Input representation | `concat(I_obs, M)` |
+| Input shape | `4 x 256 x 256` |
+| Output shape | `3 x 256 x 256` RGB reconstruction |
 | Probe models | `unet`, `partial_conv`, `gated_conv` |
-| Domains | `carpet`, `dtd`, `imagenet-simple`, `imagenet-complex` |
+| Visual domains | `carpet`, `dtd`, `imagenet-simple`, `imagenet-complex` |
+| Mask geometry | Contiguous block masks |
 | Training severities | `5`, `10`, `20`, `30` percent masked area |
 | Evaluation severities | `2`, `5`, `8`, `10`, `15`, `20`, `25`, `30`, `40` percent masked area |
-| Training budget | 80,000 optimization steps |
-| Training loss | Masked-region L1 |
 | Evaluation metrics | Masked-region L1, PSNR, SSIM, LPIPS |
+
+### Optimization and Preprocessing
+
+| Setting | Value |
+|---|---|
+| Resolution | `256 x 256` |
+| Training preprocessing | Resize to `289`, random crop to `256 x 256`, random horizontal/vertical flips |
+| Evaluation preprocessing | Resize to `256`, center crop |
+| Training budget | `80,000` optimization steps |
+| Batch size | `16` |
+| Optimizer | AdamW |
+| Learning rate | `1e-4` |
+| Weight decay | `0.01` |
+| LR schedule | Cosine decay with minimum LR `1e-6` |
+| Training loss | Masked-region L1 |
+| Validation interval | Every `2,000` steps |
+| Checkpoint selection | Lowest validation loss |
+| Early stopping | Patience `15`, minimum delta `1e-4` |
+| LPIPS backbone | AlexNet |
 
 ## Results Preview
 
@@ -141,7 +161,43 @@ Expected layouts:
 | `imagenet-simple` | `%DATA_PATH%/imagenet-simple/{train,val}` |
 | `imagenet-complex` | `%DATA_PATH%/imagenet-complex/{train,val}` |
 
-ImageNet-Simple and ImageNet-Complex are class-matched subsets produced by ranking ImageNet images with a visual-complexity score based on grayscale variance, Sobel edge magnitude, and edge density.
+
+Dataset sources:
+
+| Dataset | Source |
+|---|---|
+| `Carpet` | [ViZmerald Carpet Dataset on Kaggle](https://www.kaggle.com/datasets/vizmerald/carpetdataset) |
+| `DTD` | [Describable Textures Dataset, VGG Oxford](https://www.robots.ox.ac.uk/~vgg/data/dtd/) |
+| `ImageNet-1K` | [ImageNet ILSVRC 2012](https://www.image-net.org/challenges/LSVRC/2012/) |
+
+ImageNet-Simple and ImageNet-Complex are class-matched subsets produced by ranking ImageNet images with a visual-complexity score based on grayscale variance, Sobel edge magnitude, and edge density. The subset builder expects raw ImageNet under `%DATA_PATH%/imagenet` with `train.X1`, `train.X2`, `train.X3`, `train.X4`, and `val.X`.
+
+Build both ImageNet subsets:
+
+```bash
+python tools/imagenet.py
+```
+
+Build one subset:
+
+```bash
+python tools/imagenet.py --subset simple
+python tools/imagenet.py --subset complex
+```
+
+### Command options:
+
+| Argument | Default | Description |
+|---|---:|---|
+| `--data_dir` | `$DATA_PATH/imagenet` | Raw ImageNet folder |
+| `--out_dir` | `$DATA_PATH` | Parent folder for `imagenet-simple/` and `imagenet-complex/` |
+| `--train_dirs` | `train.X1 train.X2 train.X3 train.X4` | Raw ImageNet train folders to process |
+| `--train_k` | `500` | Images per class per subset for train |
+| `--val_k` | `25` | Images per class per subset for validation |
+| `--min_size` | `100` | Skip images whose shorter side is below this size |
+| `--tau` | `0.05` | Sobel edge threshold for edge-density scoring |
+| `--num_workers` | `8` | Parallel scoring workers |
+
 
 ## Quick Start
 
@@ -190,6 +246,24 @@ runs/<auto_run_name>/
 └── run_meta.json
 ```
 
+### Command options:
+| Argument | Default | Description |
+|---|---:|---|
+| `--dataset` | required for fresh run | Dataset config key, e.g. `carpet`, `dtd`, `imagenet-simple`, `imagenet-complex` |
+| `--mask` | required for fresh run | Mask config key; use `block` for benchmark runs |
+| `--model` | required for fresh run | Probe key: `unet`, `partial_conv`, or `gated_conv` |
+| `--loader` | `default` | Loader config profile |
+| `--train` | `default` | Training config profile; use `benchmark_v1` for benchmark runs |
+| `--runs_dir` | `runs` | Root directory for run outputs |
+| `--split` | `train` | Training split |
+| `--val_split` | `val` | Validation split |
+| `--seed` | `42` | Random seed |
+| `--limit` | none | Optional dataset subset size |
+| `--batch_size` | config value | Optional loader batch-size override |
+| `--resume_ckpt` | none | Resume from an existing checkpoint |
+| `--strict_config_match` | off | Fail on resume config-key mismatch |
+
+
 ## Evaluation
 
 Evaluation is checkpoint-first: the model and config metadata are restored from the checkpoint. `degradation_v1` is the fixed block-mask evaluation profile used for the benchmark.
@@ -217,6 +291,23 @@ Evaluation outputs are written under:
 ```text
 runs/<train_run>/eval/<eval_profile>/<split>/epoch_<n>/eval_results.json
 ```
+
+### Command options:
+| Argument | Default | Description |
+|---|---:|---|
+| `--ckpt` | required | Checkpoint path, usually `runs/<train_run>/checkpoints/best.pt` |
+| `--eval` | none | Eval config key; use `degradation_v1` for benchmark evaluation |
+| `--eval_yaml` | none | Explicit eval YAML path; use instead of `--eval` |
+| `--split` | `val` | Evaluation split |
+| `--batch_size` | checkpoint loader config | Optional eval batch-size override |
+| `--limit` | none | Optional dataset subset size |
+| `--seed` | `42` | Evaluation seed |
+| `--save_vis` | off | Save visualizations for the first evaluation condition |
+| `--no_lpips` | off | Skip LPIPS computation |
+| `--metric_scope` | checkpoint train config | Metric scope: `mask` or `full` |
+| `--report_both_metrics` | off | Include both masked and full metric variants |
+| `--strict_config_match` | off | Fail on eval/checkpoint config mismatch |
+
 
 ## Inference
 
@@ -249,6 +340,18 @@ Plot train/validation curves:
 python tools/plot_train_val.py --metrics runs/<train_run>/metrics.csv
 ```
 
+### Command options:
+
+| Argument | Default | Description |
+|---|---:|---|
+| `--runs_root` | `runs` | Directory scanned for evaluation outputs |
+| `--protocol` | `degradation_v1` | Evaluation protocol to aggregate |
+| `--split` | `val` | Evaluation split to aggregate |
+| `--epoch` | `*` | Match all available eval epoch folders |
+| `--out_dir` | `figures/paper` | Directory for generated paper figures |
+| `--scope` | `mask` | Aggregate masked-region metrics |
+| `--dpi` | `300` | Figure resolution |
+
 ## Project Layout
 
 - `configs/` — dataset, loader, model, mask, training, and evaluation profiles  
@@ -261,6 +364,19 @@ python tools/plot_train_val.py --metrics runs/<train_run>/metrics.csv
 - `tools/` — plotting, demo, ImageNet subset, and application scripts  
 - `training/` — training/evaluation loop helpers, checkpoints, losses, and optimizers  
 - `utils/` — metrics, visualization, runtime, and configuration helpers  
+
+## Reproducing the Paper Benchmark
+
+The reported block-mask benchmark requires training all probe-domain combinations:
+
+| Visual domain | Probe models |
+|---|---|
+| `carpet` | `unet`, `partial_conv`, `gated_conv` |
+| `dtd` | `unet`, `partial_conv`, `gated_conv` |
+| `imagenet-simple` | `unet`, `partial_conv`, `gated_conv` |
+| `imagenet-complex` | `unet`, `partial_conv`, `gated_conv` |
+
+Each run is trained with `benchmark_v1` and evaluated with `degradation_v1`.
 
 ## Troubleshooting
 
