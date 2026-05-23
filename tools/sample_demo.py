@@ -29,7 +29,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from data.build import build_base_dataset
 from mask.build import build_mask_generator
-from plots._utils import set_paper_style
 from utils.config_resolver import resolve_config_path
 from utils.demo_utils import apply_demo_mask, denorm, get_norm_from_cfg
 
@@ -423,8 +422,6 @@ def _as_uint8_rgb(image: np.ndarray) -> np.ndarray:
 
 
 def main() -> None:
-    set_paper_style()
-
     args = parse_args()
     datasets = resolve_datasets(args)
     ratios = [float(x.strip()) for x in args.ratios.split(",") if x.strip()]
