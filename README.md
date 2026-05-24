@@ -6,7 +6,7 @@
 A codebase for controlled image inpainting reconstructability experiments, designed to study how reconstruction behavior changes with mask severity, mask geometry, visual domain, and reconstruction probe.
 
 <div align="center">
-  <img src="figures/paper/domain_mask_demo_block.png" width="600">
+  <img src="figures/paper/domain_mask_demo_block.png" width="420">
 
   **Figure 1:** Representative block-mask corruptions across domains.
 </div>
@@ -27,45 +27,8 @@ The central goal is not only to ask which model scores best, but to measure when
 
 ## Method and Protocol
 
-Let `I` be a clean image and `M` be a binary mask where `M_ij = 1` denotes a missing pixel. The observed image is:
+The benchmark treats inpainting as a severity-dependent reconstruction problem. Each probe receives a corrupted RGB image concatenated with a binary block mask and is trained with masked-region L1 loss. Results are summarized using model-averaged degradation curves and normalized cross-probe dispersion.
 
-```math
-I_{\mathrm{obs}} = I \odot (1 - M)
-```
-
-Mask severity is the missing-area ratio:
-
-```math
-s(M) = \frac{1}{HW}\sum_{i=1}^{H}\sum_{j=1}^{W} M_{ij}
-```
-
-All paper probes are trained with masked-region L1 loss:
-
-```math
-L_{\mathrm{mask}} =
-\frac{1}{\sum_i M_i}
-\sum_i M_i |\hat{x}_i - x_i|
-```
-
-For metric `m`, probe `p`, domain `d`, geometry `g`, and severity `s`, the model-averaged degradation curve is:
-
-```math
-Q_m(d,g,s) =
-\frac{1}{|P|}\sum_{p \in P} q_m(p,d,g,s)
-```
-
-Cross-probe dispersion is computed after orienting metrics so higher is better and min-max normalizing within each metric-domain pair:
-
-```math
-\sigma_m(d,g,s) =
-\sqrt{
-\frac{1}{|P|}
-\sum_{p \in P}
-\left(
-\bar{q}_m(p,d,g,s) - \bar{Q}_m(d,g,s)
-\right)^2
-}
-```
 ### Experimental Design
 
 | Component | Setting |
@@ -103,11 +66,20 @@ Cross-probe dispersion is computed after orienting metrics so higher is better a
 
 Model-averaged degradation curves summarize how reconstruction quality changes as the missing area grows. PSNR and SSIM are higher-is-better metrics, LPIPS and L1 are lower-is-better metrics and are inverted in the figure so higher vertical position consistently indicates better reconstruction.
 
-![Model-averaged degradation curves](figures/paper/degradation_all_metrics.png)
-
-Normalized cross-probe dispersion shows whether a condition is stable across probes or sensitive to the selected reconstruction architecture.
-
-![Normalized cross-probe dispersion curves](figures/paper/dispersion_all_metrics.png)
+<div align="center">
+  <table>
+    <tr>
+      <td width="500" align="center">
+        <img src="figures/paper/degradation_all_metrics.png" width="96%"><br>
+        <sub><b>Figure 2:</b> Model-averaged degradation curves.</sub>
+      </td>
+      <td width="500" align="center">
+        <img src="figures/paper/dispersion_all_metrics.png" width="96%"><br>
+        <sub><b>Figure 3:</b> Normalized cross-probe dispersion.</sub>
+      </td>
+    </tr>
+  </table>
+</div>
 
 ## Installation
 
