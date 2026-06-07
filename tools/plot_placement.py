@@ -712,8 +712,13 @@ def compute_lmm_global(df: pd.DataFrame) -> pd.DataFrame:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                md  = smf.mixedlm(formula, data=sub, groups=sub["image"])
-                mdf = md.fit(reml=False, method="lbfgs", disp=False)
+                md = smf.mixedlm(formula, data=sub, groups=sub["image"])
+                try:
+                    mdf = md.fit(reml=False, method="lbfgs", disp=False)
+                except Exception:
+                    # lbfgs can fail with singular matrix on large/collinear designs;
+                    # powell does not require Hessian inversion.
+                    mdf = md.fit(reml=False, method="powell", disp=False)
 
             params    = mdf.fe_params
             bse       = mdf.bse
@@ -721,6 +726,10 @@ def compute_lmm_global(df: pd.DataFrame) -> pd.DataFrame:
             pvals     = mdf.pvalues
             ci        = mdf.conf_int()
             converged = bool(getattr(mdf, "converged", True))
+            n_groups  = int(
+                getattr(mdf, "ngroups", None)
+                or getattr(mdf.model, "ngroups", sub["image"].nunique())
+            )
 
             for param in params.index:
                 rows.append({
@@ -733,7 +742,7 @@ def compute_lmm_global(df: pd.DataFrame) -> pd.DataFrame:
                     "ci_lower":       float(ci.loc[param, 0]) if param in ci.index else float("nan"),
                     "ci_upper":       float(ci.loc[param, 1]) if param in ci.index else float("nan"),
                     "n_obs":          int(mdf.nobs),
-                    "n_groups":       int(mdf.ngroups),
+                    "n_groups":       n_groups,
                     "log_likelihood": float(mdf.llf),
                     "converged":      converged,
                 })
@@ -741,7 +750,7 @@ def compute_lmm_global(df: pd.DataFrame) -> pd.DataFrame:
             fitted[metric] = mdf
             status = "converged" if converged else "DID NOT CONVERGE"
             print(f"  [LMM] {metric}: {status}  "
-                  f"n={mdf.nobs:,}  groups={mdf.ngroups:,}  "
+                  f"n={mdf.nobs:,}  groups={n_groups:,}  "
                   f"llf={mdf.llf:.2f}")
 
         except Exception as e:
