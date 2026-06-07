@@ -408,6 +408,77 @@ python tools/plot_train_val.py --metrics runs/<train_run>/metrics.csv
 | `--scope` | `mask` | Aggregate masked-region metrics |
 | `--dpi` | `300` | Figure resolution |
 
+## Placement Analysis
+
+`tools/plot_placement.py` reads all `*.csv` files produced by `eval_placement.py` from `runs/placement/` and generates figures and statistical summaries.
+
+**Run with defaults (all metrics, all domains):**
+
+```bash
+python tools/plot_placement.py
+```
+
+**Include Kruskal-Wallis significance tests:**
+
+```bash
+python tools/plot_placement.py --stats
+```
+
+**Fit linear mixed models** (random intercept per image; slow for large N):
+
+```bash
+python tools/plot_placement.py --lmm
+```
+
+**Restrict to specific domains or models:**
+
+```bash
+python tools/plot_placement.py --domain dtd imagenet-complex --model gated_conv unet
+```
+
+Outputs are written to `figures/placement/` by default:
+
+```text
+figures/placement/
+├── effect_curves_psnr.png        ← severity × PSNR curves, one line per placement
+├── effect_curves_ssim.png
+├── effect_curves_lpips.png
+├── effect_curves_l1.png
+├── heatmap_psnr.png              ← severity × placement mean-metric grid, per domain
+├── heatmap_ssim.png
+├── heatmap_lpips.png
+├── heatmap_l1.png
+├── placement_summary.csv         ← mean ± std per (model, domain, severity, placement)
+├── placement_stats.csv           ← Kruskal-Wallis results (--stats only)
+├── placement_lmm.csv             ← LMM coefficients per (domain, metric) (--lmm only)
+└── pdf/                          ← PDF copies of all figures
+```
+
+### Statistical outputs
+
+`placement_stats.csv` (with `--stats`) reports a Kruskal-Wallis H-test across the five placements for each `(domain, metric, severity)` cell. Columns: `metric`, `domain`, `mask_severity`, `kruskal_H`, `p_value`, `significant_05`, `significant_01`.
+
+`placement_lmm.csv` (with `--lmm`) reports per-parameter fixed-effect coefficients from the model:
+
+```
+metric ~ C(severity) * C(placement),  random intercept per image
+```
+
+Columns: `metric`, `domain`, `parameter`, `coef`, `std_err`, `z`, `p_value`, `ci_lower`, `ci_upper`, `n_obs`, `n_groups`.
+
+### Command options
+
+| Argument | Default | Description |
+|---|---:|---|
+| `--data_dir` | `runs/placement` | Directory containing placement `*.csv` files |
+| `--out_dir` | `figures/placement` | Output directory for figures and tables |
+| `--domain` | all | Restrict to specific domain names |
+| `--model` | all | Restrict to specific model names |
+| `--stats` | off | Compute Kruskal-Wallis tests across placements |
+| `--lmm` | off | Fit linear mixed models per (domain, metric) |
+| `--dpi` | `300` | Figure resolution |
+
+
 ## Project Layout
 
 - `configs/` — dataset, loader, model, mask, training, and evaluation profiles  
