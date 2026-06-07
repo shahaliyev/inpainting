@@ -281,6 +281,90 @@ runs/<train_run>/eval/<eval_profile>/<split>/epoch_<n>/eval_results.json
 | `--strict_config_match` | off | Fail on eval/checkpoint config mismatch |
 
 
+## Placement Evaluation
+
+`eval_placement.py` is an extended evaluation protocol that assesses how mask position — independent of mask severity — affects reconstruction quality. It evaluates fixed square block masks at five deterministic positions (`top_left`, `top_right`, `center`, `bottom_left`, `bottom_right`) across configurable severity levels, writing one row per image-severity-placement condition to a CSV for statistical analysis.
+
+The masks are a pure function of image size, severity, and placement — no randomness — so results are identical across models for the same condition.
+
+**Single checkpoint:**
+
+```bash
+python eval_placement.py \
+  --ckpt runs/<train_run>/checkpoints/best.pt
+```
+
+**Scan all best checkpoints under `runs/` automatically:**
+
+```bash
+python eval_placement.py --scan_runs
+```
+
+**Scan a custom directory:**
+
+```bash
+python eval_placement.py --scan_runs my_runs/
+```
+
+**Quick test (50 images, no LPIPS):**
+
+```bash
+python eval_placement.py \
+  --ckpt runs/<train_run>/checkpoints/best.pt \
+  --n_images 50 --no_lpips
+```
+
+**Override severities or placements:**
+
+```bash
+python eval_placement.py \
+  --ckpt runs/<train_run>/checkpoints/best.pt \
+  --severities 10 20 30 --placements center top_left bottom_right
+```
+
+Outputs are written to `runs/placement/` by default:
+
+```text
+runs/placement/
+├── <run_name>.csv    ← per-image scores
+└── <run_name>.json   ← run metadata (model, domain, epoch, protocol params)
+```
+
+Override the output directory with `--out_dir path/to/dir`, or the CSV path directly (single-checkpoint mode only) with `--out path/to/results.csv`.
+
+### CSV columns
+
+| Column | Description |
+|---|---|
+| `model` | Probe name, e.g. `gated_conv` |
+| `domain` | Dataset name, e.g. `dtd` |
+| `image` | Absolute path to the source image |
+| `mask_severity` | Masked area percentage (e.g. `20`) |
+| `mask_placement` | One of `top_left`, `top_right`, `center`, `bottom_left`, `bottom_right` |
+| `l1` | Masked-region L1 (or full-image L1 with `--metric_scope full`) |
+| `psnr` | PSNR in dB |
+| `ssim` | SSIM |
+| `lpips` | LPIPS (AlexNet); empty string when `--no_lpips` is set |
+
+### Command options
+
+| Argument | Default | Description |
+|---|---:|---|
+| `--ckpt` | — | Single checkpoint path (mutually exclusive with `--scan_runs`) |
+| `--scan_runs` | — | Scan a directory for `*/checkpoints/best.pt` (defaults to `runs/`) |
+| `--eval_cfg` | `configs/eval/placement_v1.yaml` | Placement eval protocol YAML |
+| `--split` | `val` | Dataset split |
+| `--n_images` | `1000` | Images per domain (overrides `eval_cfg.n_images`) |
+| `--severities` | `5 10 20 30 40` | Mask severities in % (overrides `eval_cfg.severities`) |
+| `--placements` | all five | Placements to evaluate (overrides `eval_cfg.placements`) |
+| `--batch_size` | checkpoint config | Override loader batch size |
+| `--metric_scope` | `mask` | `mask` — score over the hole only; `full` — full image |
+| `--no_lpips` | off | Skip LPIPS (recommended on CPU) |
+| `--seed` | `42` | Dataset sampling seed |
+| `--out_dir` | `runs/placement` | Root directory for outputs |
+| `--out` | — | Explicit CSV path (single `--ckpt` mode only) |
+
+
 ## Inference
 
 For single-image inspection and qualitative inpainting results, use the interactive validation app:

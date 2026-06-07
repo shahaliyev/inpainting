@@ -1,0 +1,33 @@
+# Placement evaluation protocol v1 (benchmark-locked).
+#
+# Evaluates fixed-position square block masks at five spatial placements
+# and five severity levels. Each image is scored independently, producing
+# one CSV row per (image × severity × placement) condition.
+#
+# Keep this file immutable for fair comparisons across checkpoints.
+#
+# Usage:
+#   python eval_placement.py \
+#     --ckpt runs/<train_run>/checkpoints/best.pt
+#
+#   # Quick test (50 images, skip LPIPS):
+#   python eval_placement.py \
+#     --ckpt runs/<train_run>/checkpoints/best.pt \
+#     --n_images 50 --no_lpips
+#
+# Output CSV:
+#   runs/<train_run>/eval/placement_v1/<split>/epoch_<N>/placement_results.csv
+#
+# Columns: model, domain, image, mask_severity, mask_placement,
+#          l1, psnr, ssim, lpips
+
+severities: [5, 10, 20, 30, 40]
+
+placements:
+  - top_left
+  - top_right
+  - center
+  - bottom_left
+  - bottom_right
+
+n_images: 1000
