@@ -222,6 +222,29 @@ def cx_mask(
         return float(cx_net(pred_01, target_01, mask=mask).item())
 
 
+def cx_both(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    mean: torch.Tensor,
+    std: torch.Tensor,
+    cx_net: torch.nn.Module,
+) -> tuple[float, float]:
+    """
+    Masked + full CX with one shared VGG(target) pass.
+
+    Returns:
+        (cx_mask, cx_full)
+    """
+    recon = target * (1.0 - mask) + pred * mask
+    pred_01 = _denorm(pred, mean, std)
+    target_01 = _denorm(target, mean, std)
+    recon_01 = _denorm(recon, mean, std)
+    with torch.no_grad():
+        cx_m, cx_f = cx_net.forward_both(pred_01, target_01, recon_01, mask)
+    return float(cx_m.item()), float(cx_f.item())
+
+
 def compute_metrics(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -276,8 +299,7 @@ def compute_metrics(
 
     if "cx" in active and cx_net is not None:
         if report_both:
-            cx_m = cx_mask(pred, target, mask, mean, std, cx_net)
-            cx_f = cx_full(pred, target, mask, mean, std, cx_net)
+            cx_m, cx_f = cx_both(pred, target, mask, mean, std, cx_net)
             out["cx"] = cx_m if scope == "mask" else cx_f
             out["cx_mask"] = cx_m
             out["cx_full"] = cx_f

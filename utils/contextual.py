@@ -18,13 +18,13 @@ import torch.nn.functional as F
 from torchvision import models
 
 
-# torchvision VGG19 features indices ending at each relu{k}_2
+# torchvision VGG19.features 1-based end indices (enumerate start=1) for relu{k}_2
 _VGG19_LAYER_SLICE = {
-    "relu1_2": 4,
-    "relu2_2": 9,
-    "relu3_2": 16,
-    "relu4_2": 23,
-    "relu5_2": 30,
+    "relu1_2": 4,   # features[3]
+    "relu2_2": 9,   # features[8]
+    "relu3_2": 14,  # features[13]
+    "relu4_2": 23,  # features[22]
+    "relu5_2": 32,  # features[31]
 }
 
 # ImageNet normalization expected by torchvision VGG weights
@@ -144,6 +144,28 @@ class ContextualMetric(nn.Module):
         self.max_samples = int(max_samples)
         self.features = _VGG19Features(layers)
 
+    def _loss_from_features(
+        self,
+        pred_feats: list[torch.Tensor],
+        target_feats: list[torch.Tensor],
+        mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        layer_losses = []
+        for pf, tf in zip(pred_feats, target_feats):
+            if mask is None:
+                pf_s, tf_s = _maybe_subsample_pair(pf, tf, self.max_samples)
+                layer_losses.append(contextual_loss(pf_s, tf_s, band_width=self.band_width))
+            else:
+                # Per-image: masked feature counts can differ across the batch.
+                per_img = []
+                for i in range(pf.shape[0]):
+                    pi, ti = _masked_feature_pair(
+                        pf[i], tf[i], mask[i : i + 1], self.max_samples
+                    )
+                    per_img.append(contextual_loss(pi, ti, band_width=self.band_width))
+                layer_losses.append(torch.stack(per_img).mean())
+        return torch.stack(layer_losses).mean()
+
     @torch.no_grad()
     def forward(
         self,
@@ -161,21 +183,28 @@ class ContextualMetric(nn.Module):
         """
         pred_feats = self.features(pred_01.float())
         target_feats = self.features(target_01.float())
-        layer_losses = []
-        for pf, tf in zip(pred_feats, target_feats):
-            if mask is None:
-                pf_s, tf_s = _maybe_subsample_pair(pf, tf, self.max_samples)
-                layer_losses.append(contextual_loss(pf_s, tf_s, band_width=self.band_width))
-            else:
-                # Per-image: masked feature counts can differ across the batch.
-                per_img = []
-                for i in range(pf.shape[0]):
-                    pi, ti = _masked_feature_pair(
-                        pf[i], tf[i], mask[i : i + 1], self.max_samples
-                    )
-                    per_img.append(contextual_loss(pi, ti, band_width=self.band_width))
-                layer_losses.append(torch.stack(per_img).mean())
-        return torch.stack(layer_losses).mean()
+        return self._loss_from_features(pred_feats, target_feats, mask)
+
+    @torch.no_grad()
+    def forward_both(
+        self,
+        pred_01: torch.Tensor,
+        target_01: torch.Tensor,
+        recon_01: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Masked + full CX with shared VGG(target).
+
+        Returns:
+            (cx_mask_loss, cx_full_loss) scalars.
+        """
+        pred_feats = self.features(pred_01.float())
+        target_feats = self.features(target_01.float())
+        recon_feats = self.features(recon_01.float())
+        cx_m = self._loss_from_features(pred_feats, target_feats, mask)
+        cx_f = self._loss_from_features(recon_feats, target_feats, None)
+        return cx_m, cx_f
 
 
 def build_contextual_metric(

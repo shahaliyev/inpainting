@@ -34,7 +34,7 @@ def parse_args():
         help=(
             "Comma-separated metrics to compute: l1,psnr,ssim,lpips,cx. "
             "Default: l1,psnr,ssim (+lpips unless --no_lpips). "
-            "Example for CX-only: --metrics cx --no_lpips"
+            "Example for CX-only (masked, paper-style): --metrics cx --no_lpips --batch_size 2"
         ),
     )
     ap.add_argument(
@@ -45,7 +45,9 @@ def parse_args():
     ap.add_argument("--metric_scope", choices=["mask", "full"], default=None,
                     help="Override metric scope. Defaults to train_cfg.metrics.scope or 'mask'.")
     ap.add_argument("--report_both_metrics", action="store_true",
-                    help="Also report both mask/full metric variants in eval_results.json.")
+                    help="Force reporting both mask/full metric variants in eval_results.json.")
+    ap.add_argument("--no_report_both", action="store_true",
+                    help="Only compute the primary metric_scope (faster; recommended for CX-only).")
     ap.add_argument("--strict_config_match", action="store_true",
                     help="Fail if eval config paths mismatch checkpoint metadata defaults.")
     return ap.parse_args()
@@ -162,10 +164,23 @@ def main():
     metric_scope = args.metric_scope or str(getattr(train_metrics_cfg, "scope", "mask")).lower()
     if metric_scope not in {"mask", "full"}:
         raise ValueError(f"Unsupported metric_scope: {metric_scope}. Use 'mask' or 'full'.")
-    report_both_metrics = bool(getattr(train_metrics_cfg, "report_both", True)) or bool(args.report_both_metrics)
 
     metrics_sel = parse_metrics_arg(args.metrics)
     want_cx = bool(args.with_cx) or (metrics_sel is not None and "cx" in metrics_sel)
+    cx_only = metrics_sel == {"cx"}
+
+    if args.report_both_metrics and args.no_report_both:
+        raise ValueError("Use either --report_both_metrics or --no_report_both, not both.")
+    if args.no_report_both:
+        report_both_metrics = False
+    elif args.report_both_metrics:
+        report_both_metrics = True
+    elif cx_only:
+        # Match paper-style masked metrics; skip unused full CX by default.
+        report_both_metrics = False
+    else:
+        report_both_metrics = bool(getattr(train_metrics_cfg, "report_both", True))
+
     if metrics_sel is not None and "lpips" not in metrics_sel:
         # Explicit metric list without lpips ⇒ skip LPIPS even without --no_lpips
         skip_lpips = True
