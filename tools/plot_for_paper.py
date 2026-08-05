@@ -30,6 +30,7 @@ METRICS_SPEC = [
     (["ssim", "ssim_mask", "ssim_full"],    "SSIM",  True),
     (["lpips", "lpips_mask", "lpips_full"], "LPIPS", False),
     (["l1", "l1_mask", "l1_full"],          "L1",    False),
+    (["cx", "cx_mask", "cx_full"],          "CX",    False),
 ]
 METRICS: tuple[str, ...] = tuple(c[0][0] for c in METRICS_SPEC)
 HIGHER_IS_BETTER: dict[str, bool] = {c[0][0]: c[2] for c in METRICS_SPEC}
@@ -236,7 +237,7 @@ def _make_grid(n_rows: int, n_cols: int) -> tuple[plt.Figure, np.ndarray]:
 # ── Degradation figure ────────────────────────────────────────────────────────
 
 def _qlabel(metric: str) -> str:
-    sub = {"psnr": "PSNR", "ssim": "SSIM", "lpips": "LPIPS", "l1": "L1"}.get(metric, metric.upper())
+    sub = {"psnr": "PSNR", "ssim": "SSIM", "lpips": "LPIPS", "l1": "L1", "cx": "CX"}.get(metric, metric.upper())
     return rf"$Q_{{\mathrm{{{sub}}}}}$"
 
 
@@ -270,7 +271,7 @@ def plot_degradation(tidy: pd.DataFrame, agg: pd.DataFrame, out_path: Path, *, d
 # ── Dispersion figure ─────────────────────────────────────────────────────────
 
 def _slabel(metric: str) -> str:
-    sub = {"psnr": "PSNR", "ssim": "SSIM", "lpips": "LPIPS", "l1": "L1"}.get(metric, metric.upper())
+    sub = {"psnr": "PSNR", "ssim": "SSIM", "lpips": "LPIPS", "l1": "L1", "cx": "CX"}.get(metric, metric.upper())
     return rf"${{\sigma}}_{{\mathrm{{{sub}}}}}$"
 
 

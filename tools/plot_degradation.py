@@ -29,6 +29,7 @@ METRICS = [
     (["ssim", "ssim_mask", "ssim_full"], "SSIM", True),
     (["lpips", "lpips_mask", "lpips_full"], "LPIPS", False),   # lower is better
     (["l1", "l1_mask", "l1_full"], "L1", False),
+    (["cx", "cx_mask", "cx_full"], "CX", False),               # Contextual Loss
 ]
 
 MASK_STYLE = {

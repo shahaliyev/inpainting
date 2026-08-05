@@ -1,7 +1,11 @@
 """
 Evaluation metrics for inpainting with configurable metric scope.
 All expect normalized tensors (B, C, H, W). mean/std are used to denormalize
-to [0, 1] for PSNR/SSIM. LPIPS uses normalized [-1, 1] input by default.
+to [0, 1] for PSNR/SSIM/CX. LPIPS uses normalized [-1, 1] input by default.
+
+Optional ``metrics`` set selects which scores to compute:
+  l1, psnr, ssim, lpips, cx
+When None, defaults to l1/psnr/ssim plus lpips/cx when their nets are provided.
 """
 
 from typing import Optional
@@ -9,6 +13,49 @@ from typing import Optional
 import torch
 import numpy as np
 from skimage.metrics import structural_similarity as ssim
+
+DEFAULT_METRICS = frozenset({"l1", "psnr", "ssim", "lpips", "cx"})
+CORE_METRICS = frozenset({"l1", "psnr", "ssim"})
+
+
+def parse_metrics_arg(raw: Optional[str]) -> Optional[set[str]]:
+    """
+    Parse a comma-separated --metrics string into a set of metric names.
+
+    Returns None when raw is None/empty (caller should use defaults).
+    """
+    if raw is None:
+        return None
+    parts = [p.strip().lower() for p in str(raw).split(",") if p.strip()]
+    if not parts:
+        return None
+    unknown = sorted(set(parts) - DEFAULT_METRICS)
+    if unknown:
+        raise ValueError(
+            f"Unknown metrics {unknown}. Available: {sorted(DEFAULT_METRICS)}"
+        )
+    return set(parts)
+
+
+def resolve_active_metrics(
+    metrics: Optional[set[str]],
+    lpips_net=None,
+    cx_net=None,
+) -> set[str]:
+    """Resolve which metrics to compute given CLI selection and available nets."""
+    if metrics is None:
+        active = set(CORE_METRICS)
+        if lpips_net is not None:
+            active.add("lpips")
+        if cx_net is not None:
+            active.add("cx")
+        return active
+    active = set(metrics)
+    if "lpips" in active and lpips_net is None:
+        active.discard("lpips")
+    if "cx" in active and cx_net is None:
+        raise ValueError("Metric 'cx' requested but cx_net is None. Enable CX in eval.")
+    return active
 
 
 def _denorm(x: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
@@ -144,6 +191,37 @@ def lpips_mask(
     return d.mean().item()
 
 
+def cx_full(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    mean: torch.Tensor,
+    std: torch.Tensor,
+    cx_net: torch.nn.Module,
+) -> float:
+    """Full-image Contextual Loss on reconstructed image vs target."""
+    recon = target * (1.0 - mask) + pred * mask
+    recon_01 = _denorm(recon, mean, std)
+    target_01 = _denorm(target, mean, std)
+    with torch.no_grad():
+        return float(cx_net(recon_01, target_01, mask=None).item())
+
+
+def cx_mask(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    mean: torch.Tensor,
+    std: torch.Tensor,
+    cx_net: torch.nn.Module,
+) -> float:
+    """Masked Contextual Loss using hole-only VGG feature locations."""
+    pred_01 = _denorm(pred, mean, std)
+    target_01 = _denorm(target, mean, std)
+    with torch.no_grad():
+        return float(cx_net(pred_01, target_01, mask=mask).item())
+
+
 def compute_metrics(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -151,32 +229,44 @@ def compute_metrics(
     mean: torch.Tensor,
     std: torch.Tensor,
     lpips_net: Optional[torch.nn.Module] = None,
+    cx_net: Optional[torch.nn.Module] = None,
     metric_scope: str = "mask",
     report_both: bool = True,
+    metrics: Optional[set[str]] = None,
 ) -> dict[str, float]:
     """Compute scope-consistent primary metrics; optionally include both scopes."""
     scope = str(metric_scope).lower()
     if scope not in {"mask", "full"}:
         raise ValueError(f"Unsupported metric_scope: {metric_scope}. Use 'mask' or 'full'.")
 
-    l1_m = l1_mask(pred, target, mask).item()
-    l1_f = l1_full(pred, target, mask).item()
-    psnr_m = psnr_mask(pred, target, mask, mean, std)
-    psnr_f = psnr_full(pred, target, mask, mean, std)
-    ssim_m = ssim_mask(pred, target, mask, mean, std)
-    ssim_f = ssim_full(pred, target, mask, mean, std)
+    active = resolve_active_metrics(metrics, lpips_net=lpips_net, cx_net=cx_net)
+    out: dict[str, float] = {"metric_scope": scope}
 
-    out = {"metric_scope": scope}
-    if scope == "mask":
-        out["l1"] = l1_m
-        out["psnr"] = psnr_m
-        out["ssim"] = ssim_m
-    else:
-        out["l1"] = l1_f
-        out["psnr"] = psnr_f
-        out["ssim"] = ssim_f
+    if "l1" in active:
+        l1_m = l1_mask(pred, target, mask).item()
+        l1_f = l1_full(pred, target, mask).item()
+        out["l1"] = l1_m if scope == "mask" else l1_f
+        if report_both:
+            out["l1_mask"] = l1_m
+            out["l1_full"] = l1_f
 
-    if lpips_net is not None:
+    if "psnr" in active:
+        psnr_m = psnr_mask(pred, target, mask, mean, std)
+        psnr_f = psnr_full(pred, target, mask, mean, std)
+        out["psnr"] = psnr_m if scope == "mask" else psnr_f
+        if report_both:
+            out["psnr_mask"] = psnr_m
+            out["psnr_full"] = psnr_f
+
+    if "ssim" in active:
+        ssim_m = ssim_mask(pred, target, mask, mean, std)
+        ssim_f = ssim_full(pred, target, mask, mean, std)
+        out["ssim"] = ssim_m if scope == "mask" else ssim_f
+        if report_both:
+            out["ssim_mask"] = ssim_m
+            out["ssim_full"] = ssim_f
+
+    if "lpips" in active and lpips_net is not None:
         lpips_m = lpips_mask(pred, target, mask, mean, std, lpips_net)
         lpips_f = lpips_full(pred, target, mask, mean, std, lpips_net)
         out["lpips"] = lpips_m if scope == "mask" else lpips_f
@@ -184,12 +274,16 @@ def compute_metrics(
             out["lpips_mask"] = lpips_m
             out["lpips_full"] = lpips_f
 
-    if report_both:
-        out["l1_mask"] = l1_m
-        out["l1_full"] = l1_f
-        out["psnr_mask"] = psnr_m
-        out["psnr_full"] = psnr_f
-        out["ssim_mask"] = ssim_m
-        out["ssim_full"] = ssim_f
+    if "cx" in active and cx_net is not None:
+        if report_both:
+            cx_m = cx_mask(pred, target, mask, mean, std, cx_net)
+            cx_f = cx_full(pred, target, mask, mean, std, cx_net)
+            out["cx"] = cx_m if scope == "mask" else cx_f
+            out["cx_mask"] = cx_m
+            out["cx_full"] = cx_f
+        elif scope == "mask":
+            out["cx"] = cx_mask(pred, target, mask, mean, std, cx_net)
+        else:
+            out["cx"] = cx_full(pred, target, mask, mean, std, cx_net)
 
     return out

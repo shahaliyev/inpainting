@@ -14,6 +14,7 @@ from training.checkpoint import validate_checkpoint_schema
 from training.engine import evaluate
 from training.logger import MetricsLogger
 from utils.config_resolver import require_cfg_fields
+from utils.metrics import parse_metrics_arg, resolve_active_metrics
 from utils.runtime_messages import cfg_name, startup_summary_line
 
 def parse_args():
@@ -27,6 +28,20 @@ def parse_args():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--save_vis", action="store_true")
     ap.add_argument("--no_lpips", action="store_true", help="Skip LPIPS computation (saves time on CPU)")
+    ap.add_argument(
+        "--metrics",
+        default=None,
+        help=(
+            "Comma-separated metrics to compute: l1,psnr,ssim,lpips,cx. "
+            "Default: l1,psnr,ssim (+lpips unless --no_lpips). "
+            "Example for CX-only: --metrics cx --no_lpips"
+        ),
+    )
+    ap.add_argument(
+        "--with_cx",
+        action="store_true",
+        help="Also compute Contextual Loss (CX). Implied when --metrics includes cx.",
+    )
     ap.add_argument("--metric_scope", choices=["mask", "full"], default=None,
                     help="Override metric scope. Defaults to train_cfg.metrics.scope or 'mask'.")
     ap.add_argument("--report_both_metrics", action="store_true",
@@ -148,18 +163,43 @@ def main():
     if metric_scope not in {"mask", "full"}:
         raise ValueError(f"Unsupported metric_scope: {metric_scope}. Use 'mask' or 'full'.")
     report_both_metrics = bool(getattr(train_metrics_cfg, "report_both", True)) or bool(args.report_both_metrics)
+
+    metrics_sel = parse_metrics_arg(args.metrics)
+    want_cx = bool(args.with_cx) or (metrics_sel is not None and "cx" in metrics_sel)
+    if metrics_sel is not None and "lpips" not in metrics_sel:
+        # Explicit metric list without lpips ⇒ skip LPIPS even without --no_lpips
+        skip_lpips = True
+    else:
+        skip_lpips = bool(args.no_lpips)
+
     eval_profile = Path(eval_yaml).stem if eval_yaml else "default"
+    # Avoid overwriting full-metric results when running a filtered metric set.
+    if metrics_sel is not None:
+        eval_profile = f"{eval_profile}_{'_'.join(sorted(metrics_sel))}"
+    elif want_cx:
+        eval_profile = f"{eval_profile}_with_cx"
+
     run_dir = infer_eval_dir_from_ckpt(ckpt_path, eval_profile, args.split, state_epoch)
     run_dir.mkdir(parents=True, exist_ok=True)
     logger = MetricsLogger(run_dir) if args.save_vis else None
 
-    if args.no_lpips:
+    if skip_lpips:
         lpips_net = None
     else:
         if device.type == "cpu":
             print("WARNING: LPIPS is enabled on CPU — this will be slow. Pass --no_lpips to skip it.")
         import lpips
         lpips_net = lpips.LPIPS(net="alex").to(device).eval()
+
+    if want_cx:
+        if device.type == "cpu":
+            print("WARNING: Contextual Loss (CX) on CPU is slow.")
+        from utils.contextual import build_contextual_metric
+        cx_net = build_contextual_metric(device)
+    else:
+        cx_net = None
+
+    active_metrics = resolve_active_metrics(metrics_sel, lpips_net=lpips_net, cx_net=cx_net)
 
     config_paths = ckpt_raw.get("config_paths", {}) or {}
     dataset_path = config_paths.get("dataset_yaml")
@@ -200,6 +240,7 @@ def main():
     results = []
     print(f"checkpoint={args.ckpt}  epoch={state_epoch} step={state_step}  split={args.split}")
     print(f"metric_scope={metric_scope}  report_both_metrics={report_both_metrics}")
+    print(f"active_metrics={sorted(active_metrics)}")
     print(startup_summary_line(
         dataset_yaml=dataset_path,
         mask_yaml=mask_path,
@@ -239,8 +280,10 @@ def main():
             std=std,
             save_vis=args.save_vis and idx == 0,
             lpips_net=lpips_net,
+            cx_net=cx_net,
             metric_scope=metric_scope,
             report_both=report_both_metrics,
+            metrics=active_metrics,
         )
         metrics = {}
         for k, v in out.items():
@@ -256,13 +299,12 @@ def main():
             "mask_overrides": cond.get("mask_overrides"),
             "metrics": metrics,
         })
-        print(
-            f"  {cond_name}: val_loss={metrics['val_loss']:.6f} "
-            f"l1={metrics.get('l1', 0):.6f} "
-            f"psnr={metrics.get('psnr', 0):.4f} "
-            f"ssim={metrics.get('ssim', 0):.4f} "
-            f"lpips={metrics.get('lpips', 0):.4f}"
-        )
+        parts = [f"val_loss={metrics['val_loss']:.6f}"]
+        for key in ("l1", "psnr", "ssim", "lpips", "cx"):
+            if key in metrics:
+                fmt = ".6f" if key in ("l1", "cx") else ".4f"
+                parts.append(f"{key}={metrics[key]:{fmt}}")
+        print(f"  {cond_name}: " + " ".join(parts))
 
     summary = {
         "checkpoint": str(ckpt_path.resolve()),
@@ -274,6 +316,7 @@ def main():
         "eval_protocol": eval_profile,
         "metric_scope": metric_scope,
         "report_both_metrics": report_both_metrics,
+        "active_metrics": sorted(active_metrics),
         "eval_profile": eval_profile,
         "dataset": cfg_name(dataset_path),
         "mask": cfg_name(mask_path),

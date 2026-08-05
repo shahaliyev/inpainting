@@ -85,8 +85,10 @@ def evaluate(
     std=None,
     save_vis=False,
     lpips_net=None,
+    cx_net=None,
     metric_scope="mask",
     report_both=True,
+    metrics=None,
 ):
     model.eval()
     total_loss = 0.0
@@ -110,15 +112,18 @@ def evaluate(
         total_weight += mask.sum().item() * img.shape[1]
 
         if compute_full_metrics:
+            # Metrics must run in float32; AMP bfloat16 must not affect scores.
             m = compute_metrics(
-                pred,
-                img,
-                mask,
+                pred.float(),
+                img.float(),
+                mask.float(),
                 mean,
                 std,
                 lpips_net=lpips_net,
+                cx_net=cx_net,
                 metric_scope=metric_scope,
                 report_both=report_both,
+                metrics=metrics,
             )
             b = pred.shape[0]
             for k, v in m.items():
